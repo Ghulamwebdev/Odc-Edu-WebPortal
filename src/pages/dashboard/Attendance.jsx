@@ -144,6 +144,12 @@ const isDisabledDate = (d, batchDays, holidayMap) => {
   return false;
 };
 
+const isWorkingDateForBatch = (date, batch) => {
+  if (!date || !batch?.days) return true;
+  const allowedDays = DOW_MAP[batch.days] || [];
+  return allowedDays.includes(date.day());
+};
+
 const getBatchDateRange = (batch) => {
   const start = batch?.startDate ? dayjs(batch.startDate).startOf("day") : null;
   const end = batch?.endDate ? dayjs(batch.endDate).endOf("day") : null;
@@ -153,9 +159,21 @@ const getBatchDateRange = (batch) => {
 const clampDateToBatchRange = (date, batch) => {
   if (!date) return date;
   const { start, end } = getBatchDateRange(batch);
-  if (start && date.isBefore(start, "day")) return start;
-  if (end && date.isAfter(end, "day")) return end.startOf("day");
-  return date;
+  let candidate = date;
+  if (start && candidate.isBefore(start, "day")) candidate = start;
+  if (end && candidate.isAfter(end, "day")) candidate = end.startOf("day");
+
+  if (isWorkingDateForBatch(candidate, batch)) return candidate;
+
+  for (let offset = 1; offset <= 14; offset += 1) {
+    const next = candidate.add(offset, "day");
+    if ((!end || !next.isAfter(end, "day")) && isWorkingDateForBatch(next, batch)) return next;
+
+    const previous = candidate.subtract(offset, "day");
+    if ((!start || !previous.isBefore(start, "day")) && isWorkingDateForBatch(previous, batch)) return previous;
+  }
+
+  return candidate;
 };
 
 const parseAttendanceQrPayload = (rawValue) => {
@@ -182,15 +200,31 @@ const INVALID_QR_MESSAGE =
 
 const FACE_HASH_SIZE = 16;
 const FACE_CAPTURE_WIDTH = 320;
+const FACE_CROP_PADDING = 0.28;
 
-const createFaceHashFromCanvas = (canvas) => {
+const createFaceHashFromCanvas = (canvas, sourceRect = null) => {
   const workingCanvas = document.createElement("canvas");
   workingCanvas.width = FACE_HASH_SIZE;
   workingCanvas.height = FACE_HASH_SIZE;
   const context = workingCanvas.getContext("2d", { willReadFrequently: true });
   if (!context) return "";
 
-  context.drawImage(canvas, 0, 0, FACE_HASH_SIZE, FACE_HASH_SIZE);
+  if (sourceRect) {
+    context.drawImage(
+      canvas,
+      sourceRect.x,
+      sourceRect.y,
+      sourceRect.width,
+      sourceRect.height,
+      0,
+      0,
+      FACE_HASH_SIZE,
+      FACE_HASH_SIZE,
+    );
+  } else {
+    context.drawImage(canvas, 0, 0, FACE_HASH_SIZE, FACE_HASH_SIZE);
+  }
+
   const { data } = context.getImageData(0, 0, FACE_HASH_SIZE, FACE_HASH_SIZE);
   const grayValues = [];
 
@@ -200,6 +234,57 @@ const createFaceHashFromCanvas = (canvas) => {
 
   const average = grayValues.reduce((sum, value) => sum + value, 0) / grayValues.length;
   return grayValues.map((value) => (value >= average ? "1" : "0")).join("");
+};
+
+const clampFaceRect = (rect, width, height) => {
+  if (!rect || width <= 0 || height <= 0) return null;
+
+  const boxWidth = Math.max(Number(rect.width) || 0, 1);
+  const boxHeight = Math.max(Number(rect.height) || 0, 1);
+  const padding = Math.max(boxWidth, boxHeight) * FACE_CROP_PADDING;
+  const x = Math.max(0, (Number(rect.x) || 0) - padding);
+  const y = Math.max(0, (Number(rect.y) || 0) - padding);
+  const right = Math.min(width, (Number(rect.x) || 0) + boxWidth + padding);
+  const bottom = Math.min(height, (Number(rect.y) || 0) + boxHeight + padding);
+
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y),
+  };
+};
+
+const getCenteredFaceRect = (width, height) => {
+  const side = Math.min(width * 0.58, height * 0.78);
+  return {
+    x: Math.max(0, (width - side) / 2),
+    y: Math.max(0, (height - side) / 2),
+    width: Math.max(1, side),
+    height: Math.max(1, side),
+  };
+};
+
+const createPreviewImage = (canvas, sourceRect = null) => {
+  const previewCanvas = document.createElement("canvas");
+  const rect = sourceRect || { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  const ratio = rect.width > 0 ? rect.height / rect.width : 0.75;
+  previewCanvas.width = FACE_CAPTURE_WIDTH;
+  previewCanvas.height = Math.round(FACE_CAPTURE_WIDTH * ratio);
+  const previewContext = previewCanvas.getContext("2d");
+  if (!previewContext) return canvas.toDataURL("image/jpeg", 0.72);
+  previewContext.drawImage(
+    canvas,
+    rect.x,
+    rect.y,
+    rect.width,
+    rect.height,
+    0,
+    0,
+    previewCanvas.width,
+    previewCanvas.height,
+  );
+  return previewCanvas.toDataURL("image/jpeg", 0.72);
 };
 
 const captureFaceFrame = async ({ video, canvas, detector, requireSingleFace = false }) => {
@@ -216,25 +301,25 @@ const captureFaceFrame = async ({ video, canvas, detector, requireSingleFace = f
   if (!context) throw new Error("Unable to read camera frame.");
   context.drawImage(video, 0, 0, width, height);
 
+  let faceRect = null;
   if (detector) {
     const faces = await detector.detect(canvas);
     if (requireSingleFace && faces.length !== 1) {
       throw new Error(faces.length > 1 ? "Multiple faces detected. Keep only one student in frame." : "No face detected. Center the student's face and try again.");
     }
+    faceRect = clampFaceRect(faces[0]?.boundingBox, width, height);
   }
 
+  const cropRect = faceRect || getCenteredFaceRect(width, height);
+  const faceHash = createFaceHashFromCanvas(canvas, cropRect);
+  const fullFrameHash = createFaceHashFromCanvas(canvas);
+
   return {
-    imageData: (() => {
-      const previewCanvas = document.createElement("canvas");
-      const ratio = width > 0 ? height / width : 0.75;
-      previewCanvas.width = FACE_CAPTURE_WIDTH;
-      previewCanvas.height = Math.round(FACE_CAPTURE_WIDTH * ratio);
-      const previewContext = previewCanvas.getContext("2d");
-      if (!previewContext) return canvas.toDataURL("image/jpeg", 0.72);
-      previewContext.drawImage(canvas, 0, 0, previewCanvas.width, previewCanvas.height);
-      return previewCanvas.toDataURL("image/jpeg", 0.72);
-    })(),
-    faceHash: createFaceHashFromCanvas(canvas),
+    imageData: createPreviewImage(canvas, cropRect),
+    faceHash,
+    faceHashes: Array.from(new Set([faceHash, fullFrameHash].filter(Boolean))),
+    fullFrameHash,
+    usedDetectedFace: !!faceRect,
   };
 };
 
@@ -1387,6 +1472,29 @@ function MarkAttendancePanel({ batches }) {
       if (showToast) message.warning("Select a batch before using face attendance");
       return;
     }
+    if (isAcademyHoliday) {
+      const holidayMessage = "Face attendance is closed because the selected date is an academy holiday.";
+      setFaceScanError(holidayMessage);
+      if (showToast) message.warning(holidayMessage);
+      return;
+    }
+    if (
+      selectedBatch !== ALL_BATCHES_VALUE &&
+      !isWorkingDateForBatch(selectedDate, members.batch || selectedBatchDetails)
+    ) {
+      const scheduleMessage = "This selected date is not a working day for this batch. Select a scheduled working date, then scan again.";
+      setFaceScanError(scheduleMessage);
+      if (showToast) message.warning(scheduleMessage);
+      return;
+    }
+    if (!members.students.some((student) => isStudentAttendanceEligible(student) && isAttendanceOpenForRow(student))) {
+      const scheduleMessage = selectedBatch === ALL_BATCHES_VALUE
+        ? "No active student batch is scheduled for face attendance on this selected date. Select a working date or a particular batch."
+        : "This selected date is not a working day for this batch. Select a scheduled working date, then scan again.";
+      setFaceScanError(scheduleMessage);
+      if (showToast) message.warning(scheduleMessage);
+      return;
+    }
     if (!faceCameraActive) {
       if (showToast) message.warning("Start the camera first, then scan the face.");
       return;
@@ -1409,6 +1517,7 @@ function MarkAttendancePanel({ batches }) {
         batchId: selectedBatch,
         date: selectedDate.format("YYYY-MM-DD"),
         faceHash: capture.faceHash,
+        faceHashes: capture.faceHashes,
       });
       if (faceSetupOpen) return;
 
@@ -1466,13 +1575,12 @@ function MarkAttendancePanel({ batches }) {
       setFaceScanError(errorMessage);
       setFaceScanStatus("error");
       if (
-        ["FACE_MATCH_NOT_CONFIDENT"].includes(error?.response?.data?.code) ||
-        error?.response?.status === 404 ||
+        ["FACE_MATCH_NOT_CONFIDENT", "FACE_NOT_SETUP"].includes(error?.response?.data?.code) ||
         !error?.response
       ) {
         showFaceNoMatchPopup({
-          title: error?.response?.status === 404 ? "Student Face Not Setup" : "Face Not Matched",
-          message: error?.response?.status === 404
+          title: error?.response?.data?.code === "FACE_NOT_SETUP" ? "Student Face Not Setup" : "Face Not Matched",
+          message: error?.response?.data?.code === "FACE_NOT_SETUP"
             ? "No student face record matched this scan. Please setup this student's face first, then scan again to mark attendance."
             : !error?.response
               ? "The scanner could not read a valid face from the camera frame. Center the student's face in the box, or setup the student's face first if this is a new student."
@@ -1904,6 +2012,17 @@ function MarkAttendancePanel({ batches }) {
       .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   }, [faceSearch, members.students]);
 
+  const getFaceRosterAttendanceStatus = (student) => {
+    const keys = student.attendanceKeys?.length ? student.attendanceKeys : [student.attendanceKey].filter(Boolean);
+    if (keys.some((key) => attendanceMap[key] === "Present")) return "Present";
+    return keys.map((key) => attendanceMap[key]).find(Boolean);
+  };
+
+  const getFaceRosterAttendanceTime = (student) => {
+    const keys = student.attendanceKeys?.length ? student.attendanceKeys : [student.attendanceKey].filter(Boolean);
+    return keys.map((key) => timeMap[key]).find(Boolean);
+  };
+
   const faceStudentCols = [
     { title: "#", width: 50, render: (_, __, i) => i + 1 },
     { title: "Name", dataIndex: "name", render: (v) => <span className="font-medium">{v}</span> },
@@ -1944,9 +2063,9 @@ function MarkAttendancePanel({ batches }) {
       width: 150,
       render: (_, r) => (
         <div className="flex flex-col gap-1">
-          <StatusTag status={attendanceMap[r.attendanceKey]} />
-          {timeMap[r.attendanceKey] && (
-            <span className="text-[10px] text-gray-400">ðŸ• {timeMap[r.attendanceKey]}</span>
+          <StatusTag status={getFaceRosterAttendanceStatus(r)} />
+          {getFaceRosterAttendanceTime(r) && (
+            <span className="text-[10px] text-gray-400">Marked {getFaceRosterAttendanceTime(r)}</span>
           )}
         </div>
       ),
@@ -2589,6 +2708,7 @@ function MarkAttendancePanel({ batches }) {
       <Modal
         title="Face Setup Completed"
         open={faceSetupSuccessOpen}
+        zIndex={1200}
         footer={[
           <Button key="ok" type="primary" onClick={() => setFaceSetupSuccessOpen(false)}>
             OK
@@ -2730,6 +2850,7 @@ function MarkAttendancePanel({ batches }) {
       <Modal
         title={faceNoMatchData?.title || "Face Not Matched"}
         open={faceNoMatchOpen}
+        zIndex={1300}
         footer={[
           <Button
             key="setup"
@@ -2808,7 +2929,23 @@ function MarkAttendancePanel({ batches }) {
       <Modal
         title={faceSuccessData?.alreadyMarked ? "Attendance Already Marked Today" : "Face Attendance Marked"}
         open={faceSuccessOpen}
-        footer={null}
+        zIndex={1300}
+        footer={[
+          <Button
+            key="close"
+            type="primary"
+            onClick={() => {
+              if (faceSuccessTimerRef.current) {
+                clearTimeout(faceSuccessTimerRef.current);
+                faceSuccessTimerRef.current = null;
+              }
+              setFaceSuccessOpen(false);
+              setFaceScanStatus("scanning");
+            }}
+          >
+            Close
+          </Button>,
+        ]}
         closable={false}
         maskClosable={false}
         onCancel={() => setFaceSuccessOpen(false)}

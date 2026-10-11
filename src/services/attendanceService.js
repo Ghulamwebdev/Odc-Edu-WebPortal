@@ -26,8 +26,8 @@ export const enrollFaceAttendance = async ({ studentId, faceHash, imageData, sam
   return response.data;
 };
 
-export const markFaceAttendance = async ({ batchId, date, faceHash }) => {
-  const response = await api.post("/attendance/face/mark", { batchId, date, faceHash });
+export const markFaceAttendance = async ({ batchId, date, faceHash, faceHashes }) => {
+  const response = await api.post("/attendance/face/mark", { batchId, date, faceHash, faceHashes });
   return response.data;
 };
 

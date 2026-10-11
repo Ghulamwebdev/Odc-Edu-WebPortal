@@ -74,7 +74,7 @@ const checkHoliday = async (date, batchId) => {
   return holiday || null;
 };
 
-const ACTIVE_QR_ENROLLMENT_STATUSES = ["Active", "On Hold"];
+const ACTIVE_QR_ENROLLMENT_STATUSES = ["Active", "Enrolled", "On Hold"];
 const FACE_MATCH_MAX_DISTANCE = 96;
 const ALL_BATCHES_VALUE = "__all_batches__";
 
@@ -89,6 +89,15 @@ const getHashDistance = (a, b) => {
   }
   return distance;
 };
+
+const normalizeFaceHashes = (faceHash, faceHashes = []) =>
+  Array.from(
+    new Set(
+      [faceHash, ...(Array.isArray(faceHashes) ? faceHashes : [])]
+        .filter(isValidFaceHash)
+        .map((hash) => hash.trim()),
+    ),
+  );
 
 const findQrEligibleStudentEnrollments = async ({ studentId, studentCode, attendanceDate }) => {
   const enrollments = await EnrollmentSchema.find({
@@ -342,12 +351,13 @@ const enrollFaceAttendance = async (req, res) => {
 
 const markFaceAttendance = async (req, res) => {
   try {
-    const { batchId, date, faceHash } = req.body || {};
+    const { batchId, date, faceHash, faceHashes } = req.body || {};
+    const normalizedFaceHashes = normalizeFaceHashes(faceHash, faceHashes);
 
-    if (!batchId || !date || !isValidFaceHash(faceHash)) {
+    if (!batchId || !date || !normalizedFaceHashes.length) {
       return res.status(400).json({
         success: false,
-        message: "batchId, date, and a valid faceHash are required",
+        message: "batchId, date, and a valid face hash are required",
       });
     }
 
@@ -390,8 +400,9 @@ const markFaceAttendance = async (req, res) => {
     }
 
     if (!enrollments.length) {
-      return res.status(404).json({
+      return res.status(400).json({
         success: false,
+        code: "FACE_ATTENDANCE_CLOSED",
         message: isAllBatches
           ? "No active working batch was found for face attendance on the selected date."
           : "This batch is not active, scheduled, or open for face attendance on the selected date.",
@@ -404,7 +415,9 @@ const markFaceAttendance = async (req, res) => {
       .filter((enrollment) => isValidFaceHash(enrollment.student.faceAttendance.faceHash))
       .forEach((enrollment) => {
         const storedHash = enrollment.student.faceAttendance.faceHash;
-        const distance = getHashDistance(faceHash.trim(), storedHash);
+        const distance = Math.min(
+          ...normalizedFaceHashes.map((hash) => getHashDistance(hash, storedHash)),
+        );
         const studentKey = String(enrollment.student._id);
         const candidate = {
           enrollment,
@@ -422,6 +435,7 @@ const markFaceAttendance = async (req, res) => {
     if (!candidates.length) {
       return res.status(404).json({
         success: false,
+        code: "FACE_NOT_SETUP",
         message: "No face attendance setup was found for students in this batch.",
       });
     }
