@@ -6,7 +6,7 @@ import App from "./App";
 import { registerSW } from 'virtual:pwa-register'
 
 // Register Service Worker
-const updateSW    = registerSW({
+const updateSW    = registerSW ({
   onNeedRefresh() {
     if (confirm('New content available. Reload?')) {
       updateSW(true)
