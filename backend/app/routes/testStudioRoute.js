@@ -17,6 +17,7 @@ import {
   pauseTestTimer,
   previewTestAssignment,
   publishTest,
+  reassignRemainingStudents,
   resumeTestTimer,
   saveTest,
   startMyStudentTest,
@@ -50,6 +51,7 @@ router.put("/tests/:id", authorize("test_studio", "update"), updateTest);
 router.post("/tests/:id/publish", authorize("test_studio", "approve"), publishTest);
 router.post("/tests/:id/pause", authorize("test_studio", "approve"), pauseTestTimer);
 router.post("/tests/:id/resume", authorize("test_studio", "approve"), resumeTestTimer);
+router.post("/tests/:id/reassign-remaining", authorize("test_studio", "approve"), reassignRemainingStudents);
 router.put("/tests/:id/paper-header", authorize("test_studio", "update"), updateTestPaperHeader);
 router.post("/tests/:id/duplicate", authorize("test_studio", "create"), duplicateTest);
 router.delete("/tests/:id", authorize("test_studio", "delete"), deleteTest);

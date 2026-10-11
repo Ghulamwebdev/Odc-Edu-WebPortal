@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   Button,
   Card,
@@ -46,6 +46,7 @@ import {
   deleteTest,
   duplicateTest,
   getTeacherPaperHeader,
+  getTestById,
   getTestAttempts,
   getQuestionBank,
   getTests,
@@ -53,13 +54,10 @@ import {
   pauseTestTimer,
   previewTestAssignment,
   publishTest,
+  reassignRemainingStudents,
   resumeTestTimer,
   updateTest,
 } from "../../services/testStudioService";
-import {
-  createStudentPortalAccounts,
-  previewStudentPortalAccounts,
-} from "../../services/studentPortalAccountService";
 
 const questionTypeOptions = [
   { label: "MCQ - Single Correct", value: "mcq_single" },
@@ -120,15 +118,13 @@ const defaultPaperHeader = {
   note: "",
 };
 
-const TestStudio = ({ setupMode = false }) => {
+const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const navigate = useNavigate();
+  const { id: routeTestId } = useParams();
   const permissions = useModulePermissions("test_studio");
   const adminInfo = useZustandStore((state) => state.adminInfo);
-  const isSuperAdmin = useZustandStore((state) => state.isSuperAdmin);
   const employeeMode =
     String(adminInfo?.userData?.role || "").toLowerCase() === "employee";
-  const superAdminMode =
-    isSuperAdmin === true || adminInfo?.userData?.isSuperAdmin === true;
   const canCreateTest = employeeMode || permissions.create;
   const canUpdateTest = employeeMode || permissions.update;
   const canPublishTest = employeeMode || permissions.approve;
@@ -148,9 +144,13 @@ const TestStudio = ({ setupMode = false }) => {
   const [detailTest, setDetailTest] = useState(null);
   const [detailAttempts, setDetailAttempts] = useState([]);
   const [detailAttemptsLoading, setDetailAttemptsLoading] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignTest, setReassignTest] = useState(null);
   const [teacherPaperHeader, setTeacherPaperHeader] = useState(defaultPaperHeader);
   const [nowTick, setNowTick] = useState(dayjs());
   const [form] = Form.useForm();
+  const [reassignForm] = Form.useForm();
   const selectedCourse = Form.useWatch("course", form);
   const selectedBatchIds = Form.useWatch("batchIds", form) || [];
 
@@ -179,6 +179,25 @@ const TestStudio = ({ setupMode = false }) => {
   useEffect(() => {
     loadData();
   }, [filters.status]);
+
+  useEffect(() => {
+    if (!detailMode || !routeTestId) return;
+
+    const loadDetailTest = async () => {
+      setLoading(true);
+      try {
+        const response = await getTestById(routeTestId);
+        setDetailTest(response.data || null);
+      } catch (error) {
+        message.error(error.message || "Failed to load test details");
+        navigate(testStudioBasePath);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadDetailTest();
+  }, [detailMode, routeTestId]);
 
   useEffect(() => {
     const loadPaperHeader = async () => {
@@ -213,23 +232,24 @@ const TestStudio = ({ setupMode = false }) => {
     loadBank();
   }, [selectedCourse]);
 
+  const loadDetailAttempts = async (testId = detailTest?._id) => {
+    if (!testId) {
+      setDetailAttempts([]);
+      return;
+    }
+    setDetailAttemptsLoading(true);
+    try {
+      const response = await getTestAttempts(testId);
+      setDetailAttempts(response.data || []);
+    } catch (error) {
+      message.error(error.message || "Failed to load submitted papers");
+    } finally {
+      setDetailAttemptsLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadAttempts = async () => {
-      if (!detailTest?._id) {
-        setDetailAttempts([]);
-        return;
-      }
-      setDetailAttemptsLoading(true);
-      try {
-        const response = await getTestAttempts(detailTest._id);
-        setDetailAttempts(response.data || []);
-      } catch (error) {
-        message.error(error.message || "Failed to load submitted papers");
-      } finally {
-        setDetailAttemptsLoading(false);
-      }
-    };
-    loadAttempts();
+    loadDetailAttempts();
   }, [detailTest?._id]);
 
   const courses = options;
@@ -520,6 +540,42 @@ const TestStudio = ({ setupMode = false }) => {
     }
   };
 
+  const openReassignRemaining = (test) => {
+    setReassignTest(test);
+    const startAt = dayjs().add(1, "day").hour(9).minute(0).second(0);
+    reassignForm.setFieldsValue({
+      startAt,
+      endAt: startAt.add(test.schedule?.durationMinutes || 60, "minute"),
+      durationMinutes: test.schedule?.durationMinutes || 60,
+    });
+    setReassignOpen(true);
+  };
+
+  const handleReassignRemaining = async () => {
+    const targetTest = reassignTest || detailTest;
+    if (!targetTest?._id) return;
+    try {
+      const values = await reassignForm.validateFields();
+      setReassigning(true);
+      const response = await reassignRemainingStudents(targetTest._id, {
+        startAt: values.startAt?.toISOString(),
+        endAt: values.endAt?.toISOString(),
+        durationMinutes: values.durationMinutes,
+      });
+      message.success(response.message || "Remaining students reassigned");
+      setReassignOpen(false);
+      setReassignTest(null);
+      if (detailMode) {
+        setDetailTest(response.data || targetTest);
+      }
+      await Promise.all([loadData(), loadDetailAttempts(targetTest._id)]);
+    } catch (error) {
+      if (!error?.errorFields) message.error(error.message || "Failed to reassign remaining students");
+    } finally {
+      setReassigning(false);
+    }
+  };
+
   const formatCountdown = (milliseconds) => {
     const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
     const hours = Math.floor(totalSeconds / 3600);
@@ -573,88 +629,7 @@ const TestStudio = ({ setupMode = false }) => {
   };
 
   const handleNextStep = async () => {
-    if (currentStep !== 4 || !superAdminMode) {
-      setCurrentStep((prev) => prev + 1);
-      return;
-    }
-
-    try {
-      await form.validateFields(["batchIds"]);
-      const values = form.getFieldsValue(true);
-      const batchIds = values.batchIds || [];
-      if (!batchIds.length) {
-        message.warning("Select at least one batch first.");
-        return;
-      }
-
-      const previewResponse = await previewStudentPortalAccounts({
-        batchIds,
-        academyEmail: "odcacdemy@gmail.com",
-      });
-      const preview = previewResponse.data || {};
-
-      Modal.confirm({
-        title: "Create student portal accounts?",
-        width: 720,
-        okText: "Yes, Create & Continue",
-        cancelText: "Skip",
-        okButtonProps: { className: "!bg-primary !border-primary" },
-        content: (
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Student login accounts will be created for students enrolled in the selected batches.
-              Existing student accounts will be skipped and kept as one account per student.
-            </p>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-lg border border-slate-200 p-3">
-                <div className="text-xs text-slate-500">Selected Students</div>
-                <div className="text-xl font-ArialBold text-primary">{preview.totalStudents || 0}</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 p-3">
-                <div className="text-xs text-slate-500">New Accounts</div>
-                <div className="text-xl font-ArialBold text-green-700">{preview.newAccounts || 0}</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 p-3">
-                <div className="text-xs text-slate-500">Already Created</div>
-                <div className="text-xl font-ArialBold text-amber-700">{preview.existingAccounts || 0}</div>
-              </div>
-            </div>
-            <div className="max-h-[220px] overflow-auto rounded-lg border border-slate-200">
-              {(preview.students || []).map((student) => (
-                <div
-                  key={student.studentId}
-                  className="flex items-center justify-between border-b border-slate-100 px-3 py-2 last:border-b-0"
-                >
-                  <div>
-                    <div className="text-sm font-semibold text-primary">{student.studentName}</div>
-                    <div className="text-xs text-slate-500">{student.registrationNo || "No registration"}</div>
-                  </div>
-                  <Tag color={student.alreadyCreated ? "orange" : "green"}>
-                    {student.alreadyCreated ? "Existing" : "Ready"}
-                  </Tag>
-                </div>
-              ))}
-            </div>
-          </div>
-        ),
-        onOk: async () => {
-          const response = await createStudentPortalAccounts({
-            batchIds,
-            academyEmail: "odcacdemy@gmail.com",
-          });
-          const created = response.data?.created?.length || 0;
-          const skipped = response.data?.skipped?.length || 0;
-          message.success(`${created} account(s) created. ${skipped} existing account(s) skipped.`);
-          setCurrentStep((prev) => prev + 1);
-        },
-        onCancel: () => {
-          setCurrentStep((prev) => prev + 1);
-        },
-      });
-    } catch (error) {
-      if (error?.errorFields) return;
-      message.error(error.message || "Failed to preview student portal accounts");
-    }
+    setCurrentStep((prev) => prev + 1);
   };
 
   const addQuestion = (type = form.getFieldValue("allowedQuestionTypes")?.[0] || "mcq_single") => {
@@ -711,61 +686,121 @@ const TestStudio = ({ setupMode = false }) => {
     return y + lines.length * (options.lineHeight || 6);
   };
 
-  const drawTestPaperHeader = (doc, test) => {
-    const paperHeader = {
-      ...defaultPaperHeader,
-      ...teacherPaperHeader,
-      ...(teacherPaperHeader.academyName ? {} : test.settings?.paperHeader || {}),
-    };
-    const academyName = paperHeader.academyName || "Academy / Institute Name";
-    let y = 14;
+  const normalizePdfLogo = (imageData) =>
+    new Promise((resolve) => {
+      if (!imageData) {
+        resolve("");
+        return;
+      }
 
-    const hasBrandRow = paperHeader.logo || paperHeader.logoText;
-    if (paperHeader.logo) {
-      try {
-        doc.addImage(paperHeader.logo, "PNG", 14, 12, 22, 22);
-      } catch {
+      const value = String(imageData);
+      if (/^data:image\/(png|jpe?g);base64,/i.test(value)) {
+        resolve(value);
+        return;
+      }
+
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
         try {
-          doc.addImage(paperHeader.logo, "JPEG", 14, 12, 22, 22);
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth || image.width;
+          canvas.height = image.naturalHeight || image.height;
+          const context = canvas.getContext("2d");
+          if (!context) {
+            resolve("");
+            return;
+          }
+          context.drawImage(image, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
         } catch {
-          // Ignore invalid image data so PDF download still works.
+          resolve("");
         }
+      };
+      image.onerror = () => resolve("");
+      image.src = value;
+    });
+
+  const addPdfImage = (doc, imageData, x, y, width, height) => {
+    if (!imageData) return false;
+    const format = String(imageData).includes("image/jpeg") || String(imageData).includes("image/jpg")
+      ? "JPEG"
+      : "PNG";
+    try {
+      doc.addImage(imageData, format, x, y, width, height);
+      return true;
+    } catch {
+      try {
+        doc.addImage(imageData, format === "PNG" ? "JPEG" : "PNG", x, y, width, height);
+        return true;
+      } catch {
+        return false;
       }
     }
-    if (paperHeader.logoText) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
-      doc.text(paperHeader.logoText, paperHeader.logo ? 40 : 14, 25);
-    }
+  };
+
+  const drawTestPaperHeader = async (doc, test) => {
+    const savedHeader = test.settings?.paperHeader || {};
+    const paperHeader = Object.keys(defaultPaperHeader).reduce((acc, key) => {
+      acc[key] = teacherPaperHeader[key] || savedHeader[key] || defaultPaperHeader[key];
+      return acc;
+    }, {});
+    const logoData = await normalizePdfLogo(paperHeader.logo);
+    const academyName = paperHeader.academyName || "Academy / Institute Name";
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 14;
+    const contentWidth = pageWidth - margin * 2;
+    const logoSize = 24;
+    const top = 12;
+    const logoRendered = addPdfImage(doc, logoData, margin, top, logoSize, logoSize);
+    const textLeft = logoRendered ? margin + logoSize + 8 : margin;
+    const textWidth = logoRendered ? contentWidth - logoSize - 8 : contentWidth;
+    const textCenter = textLeft + textWidth / 2;
+    let y = top + 3;
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(16);
-    doc.text(academyName, hasBrandRow ? 118 : 105, y, { align: "center" });
-    y += 7;
+    const academyLines = doc.splitTextToSize(String(academyName), textWidth);
+    doc.text(academyLines, textCenter, y, { align: "center" });
+    y += academyLines.length * 7;
+
+    if (paperHeader.logoText && paperHeader.logoText !== academyName) {
+      doc.setFontSize(11);
+      const logoTextLines = doc.splitTextToSize(String(paperHeader.logoText), textWidth);
+      doc.text(logoTextLines, textCenter, y, { align: "center" });
+      y += logoTextLines.length * 5.5;
+    }
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    [paperHeader.address, [paperHeader.phone, paperHeader.email, paperHeader.website].filter(Boolean).join(" | "), paperHeader.note]
-      .filter(Boolean)
-      .forEach((line) => {
-        doc.text(String(line), 105, y, { align: "center", maxWidth: 130 });
-        y += 5;
-      });
+    const headerLines = [
+      paperHeader.address,
+      [paperHeader.phone, paperHeader.email, paperHeader.website].filter(Boolean).join(" | "),
+      paperHeader.note,
+    ].filter(Boolean);
 
+    headerLines.forEach((line) => {
+      const lines = doc.splitTextToSize(String(line), textWidth);
+      doc.text(lines, textCenter, y, { align: "center" });
+      y += lines.length * 4.7;
+    });
+
+    const dividerY = Math.max(y + 5, top + (logoRendered ? logoSize + 5 : 27));
     doc.setDrawColor(20, 40, 90);
-    doc.line(14, Math.max(y, 39), 196, Math.max(y, 39));
-    return Math.max(y + 8, 47);
+    doc.setLineWidth(0.3);
+    doc.line(margin, dividerY, pageWidth - margin, dividerY);
+    return dividerY + 8;
   };
 
-  const downloadTestPaperPdf = (test) => {
+  const downloadTestPaperPdf = async (test) => {
     try {
       const doc = new jsPDF({ unit: "mm", format: "a4" });
-      let y = drawTestPaperHeader(doc, test);
+      let y = await drawTestPaperHeader(doc, test);
       const pageHeight = doc.internal.pageSize.getHeight();
-      const addPageIfNeeded = (space = 20) => {
+      const addPageIfNeeded = async (space = 20) => {
         if (y + space <= pageHeight - 15) return;
         doc.addPage();
-        y = drawTestPaperHeader(doc, test);
+        y = await drawTestPaperHeader(doc, test);
       };
 
       doc.setFont("helvetica", "bold");
@@ -783,8 +818,9 @@ const TestStudio = ({ setupMode = false }) => {
         y = addPdfText(doc, test.instructions, 14, y, { maxWidth: 180 });
       }
 
-      (test.questions || []).forEach((question, index) => {
-        addPageIfNeeded(30);
+      for (let index = 0; index < (test.questions || []).length; index += 1) {
+        const question = (test.questions || [])[index];
+        await addPageIfNeeded(30);
         y += 4;
         doc.setFont("helvetica", "bold");
         doc.setFontSize(11);
@@ -793,20 +829,21 @@ const TestStudio = ({ setupMode = false }) => {
         doc.setFontSize(10);
 
         if (["mcq_single", "mcq_multiple", "true_false"].includes(question.questionType)) {
-          (question.options || []).forEach((option, optionIndex) => {
-            addPageIfNeeded(8);
+          for (let optionIndex = 0; optionIndex < (question.options || []).length; optionIndex += 1) {
+            const option = (question.options || [])[optionIndex];
+            await addPageIfNeeded(8);
             const label = String.fromCharCode(65 + optionIndex);
             y = addPdfText(doc, `${label}. ${option.text || ""}`, 20, y, { maxWidth: 170, lineHeight: 5 });
-          });
+          }
         } else {
-          addPageIfNeeded(24);
+          await addPageIfNeeded(24);
           doc.setDrawColor(210, 210, 210);
           for (let line = 0; line < 4; line += 1) {
             doc.line(20, y + line * 8, 190, y + line * 8);
           }
           y += 34;
         }
-      });
+      }
 
       const pageCount = doc.getNumberOfPages();
       for (let page = 1; page <= pageCount; page += 1) {
@@ -1210,6 +1247,177 @@ const TestStudio = ({ setupMode = false }) => {
     return renderWizardPage();
   }
 
+  const renderAttemptAnswers = (attempt) => {
+    const questionMap = new Map((detailTest?.questions || []).map((question) => [String(question._id), question]));
+    if (!attempt.answers?.length) {
+      return <Empty description="No answers submitted for this student" />;
+    }
+
+    return (
+      <div className="space-y-3 bg-slate-50 p-3">
+        {attempt.answers.map((answer, index) => {
+          const question = questionMap.get(String(answer.questionId));
+          const optionMap = new Map((question?.options || []).map((option, optionIndex) => [String(option._id || optionIndex), option.text]));
+          const selected = (answer.selectedOptions || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
+          const correct = (question?.correctAnswers || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
+
+          return (
+            <div key={`${answer.questionId}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="font-semibold text-primary">
+                  Q{index + 1}. {question?.questionText || "Question"}
+                </div>
+                <Tag color={answer.isCorrect ? "green" : "red"}>
+                  {answer.isCorrect ? "Right" : "Wrong"}
+                </Tag>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
+                <div>
+                  <div className="text-xs font-semibold uppercase text-slate-500">Student Answer</div>
+                  <div>{selected.length ? selected.join(", ") : answer.textAnswer || "No answer"}</div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold uppercase text-slate-500">Correct Answer</div>
+                  <div>{correct.length ? correct.join(", ") : question?.modelAnswer || "N/A"}</div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold uppercase text-slate-500">Marks</div>
+                  <div>{answer.marksAwarded || 0} / {question?.marks || 0}</div>
+                </div>
+              </div>
+              {question?.explanation ? (
+                <div className="mt-2 text-xs text-slate-500">Explanation: {question.explanation}</div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderTestDetailsContent = () => {
+    if (!detailTest) {
+      return <Card loading={loading} className="rounded-2xl" />;
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="module-title">Test Details</h2>
+            <p className="module-subtitle">Review completion, submitted answers, and reassign remaining students</p>
+          </div>
+          <Button onClick={() => navigate(testStudioBasePath)}>Back to Test Studio</Button>
+        </div>
+        <Card>
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h3 className="m-0 text-lg font-ArialBold text-primary">{detailTest.title}</h3>
+              <p className="m-0 mt-1 text-sm text-slate-500">{detailTest.description || "No description"}</p>
+            </div>
+            <Tag color={statusColors[detailTest.status]}>{detailTest.status}</Tag>
+          </div>
+        </Card>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <Card><Statistic title="Students" value={detailTest.studentCount || 0} /></Card>
+          <Card><Statistic title="Not Started" value={detailTest.attemptCounts?.not_started || 0} /></Card>
+          <Card><Statistic title="In Progress" value={detailTest.attemptCounts?.in_progress || 0} /></Card>
+          <Card><Statistic title="Submitted" value={(detailTest.attemptCounts?.submitted || 0) + (detailTest.attemptCounts?.auto_submitted || 0)} /></Card>
+        </div>
+        <Card title="Assigned Batches">
+          <div className="flex flex-wrap gap-2">
+            {(detailTest.assignedBatches || []).map((item) => <Tag key={item.batch?._id || item.batch}>{item.batch?.batchName || item.batch}</Tag>)}
+          </div>
+        </Card>
+        <Card
+          title="Student Test Completion"
+          extra={
+            canPublishTest ? (
+              <Button size="small" onClick={() => openReassignRemaining(detailTest)}>
+                Reassign Remaining
+              </Button>
+            ) : null
+          }
+        >
+          <Table
+            rowKey="_id"
+            loading={detailAttemptsLoading}
+            dataSource={detailAttempts}
+            pagination={{ pageSize: 10 }}
+            scroll={{ x: "max-content" }}
+            expandable={{
+              expandedRowRender: renderAttemptAnswers,
+              rowExpandable: (attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status),
+            }}
+            columns={[
+              {
+                title: "Student",
+                render: (_, attempt) => (
+                  <div>
+                    <div className="font-semibold text-primary">{attempt.student?.studentName || "Student"}</div>
+                    <div className="text-xs text-slate-500">{attempt.student?.registrationNo || "No registration"}</div>
+                  </div>
+                ),
+              },
+              { title: "Batch", render: (_, attempt) => attempt.batch?.batchName || "N/A" },
+              {
+                title: "Status",
+                dataIndex: "status",
+                render: (value) => {
+                  const submitted = ["submitted", "auto_submitted", "graded"].includes(value);
+                  return <Tag color={submitted ? "green" : value === "in_progress" ? "blue" : "orange"}>{value}</Tag>;
+                },
+              },
+              { title: "Score", render: (_, attempt) => `${attempt.score || 0} (${attempt.percentage || 0}%)` },
+              {
+                title: "Result",
+                render: (_, attempt) =>
+                  ["submitted", "auto_submitted", "graded"].includes(attempt.status)
+                    ? <Tag color={attempt.passed ? "green" : "red"}>{attempt.passed ? "Passed" : "Not Passed"}</Tag>
+                    : <Tag color="orange">Remaining</Tag>,
+              },
+              { title: "Submitted", render: (_, attempt) => attempt.submittedAt ? dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A") : "Not submitted" },
+            ]}
+          />
+        </Card>
+        {renderReassignModal()}
+      </div>
+    );
+  };
+
+  const renderReassignModal = () => (
+    <Modal
+      title="Reassign Remaining Students"
+      open={reassignOpen}
+      onCancel={() => {
+        setReassignOpen(false);
+        setReassignTest(null);
+      }}
+      onOk={handleReassignRemaining}
+      confirmLoading={reassigning}
+      okText="Reassign Remaining"
+    >
+      <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        This keeps submitted students completed and reopens the same test only for students who have not submitted yet.
+      </div>
+      <Form form={reassignForm} layout="vertical">
+        <Form.Item name="startAt" label="New Start Date & Time" rules={[{ required: true, message: "Start time is required" }]}>
+          <DatePicker showTime className="w-full" disabledDate={(current) => current && current < dayjs().startOf("day")} />
+        </Form.Item>
+        <Form.Item name="endAt" label="New End Date & Time" rules={[{ required: true, message: "End time is required" }]}>
+          <DatePicker showTime className="w-full" disabledDate={(current) => current && current < dayjs().startOf("day")} />
+        </Form.Item>
+        <Form.Item name="durationMinutes" label="Duration (minutes)" rules={[{ required: true }]}>
+          <InputNumber min={1} className="w-full" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+
+  if (detailMode) {
+    return renderTestDetailsContent();
+  }
+
   const columns = [
     {
       title: "Test",
@@ -1230,7 +1438,7 @@ const TestStudio = ({ setupMode = false }) => {
       title: "Actions",
       render: (_, test) => (
         <Space>
-          <Button size="small" onClick={() => setDetailTest(test)}>Details</Button>
+          <Button size="small" onClick={() => navigate(`${testStudioBasePath}/${test._id}`)}>Details</Button>
           <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadTestPaperPdf(test)}>
             PDF
           </Button>
@@ -1244,6 +1452,11 @@ const TestStudio = ({ setupMode = false }) => {
               onClick={() => handleTimerControl(test)}
             >
               {test.schedule?.isPaused ? "Continue" : "Pause"}
+            </Button>
+          ) : null}
+          {canPublishTest && ["completed", "live", "scheduled"].includes(test.status) ? (
+            <Button size="small" onClick={() => openReassignRemaining(test)}>
+              Reassign Remaining
             </Button>
           ) : null}
           {canDeleteTest && test.status === "draft" ? (
@@ -1348,13 +1561,26 @@ const TestStudio = ({ setupMode = false }) => {
                 {(detailTest.assignedBatches || []).map((item) => <Tag key={item.batch?._id || item.batch}>{item.batch?.batchName || item.batch}</Tag>)}
               </div>
             </Card>
-            <Card title="Submitted Papers">
+            <Card
+              title="Student Test Completion"
+              extra={
+                canPublishTest ? (
+                  <Button size="small" onClick={() => openReassignRemaining(detailTest)}>
+                    Reassign Remaining
+                  </Button>
+                ) : null
+              }
+            >
               <Table
                 rowKey="_id"
                 loading={detailAttemptsLoading}
                 dataSource={detailAttempts}
                 pagination={{ pageSize: 5 }}
                 scroll={{ x: "max-content" }}
+                expandable={{
+                  expandedRowRender: renderAttemptAnswers,
+                  rowExpandable: (attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status),
+                }}
                 columns={[
                   {
                     title: "Student",
@@ -1369,10 +1595,19 @@ const TestStudio = ({ setupMode = false }) => {
                   {
                     title: "Status",
                     dataIndex: "status",
-                    render: (value) => <Tag color={["submitted", "auto_submitted", "graded"].includes(value) ? "green" : "blue"}>{value}</Tag>,
+                    render: (value) => {
+                      const submitted = ["submitted", "auto_submitted", "graded"].includes(value);
+                      return <Tag color={submitted ? "green" : value === "in_progress" ? "blue" : "orange"}>{value}</Tag>;
+                    },
                   },
                   { title: "Score", render: (_, attempt) => `${attempt.score || 0} (${attempt.percentage || 0}%)` },
-                  { title: "Result", render: (_, attempt) => <Tag color={attempt.passed ? "green" : "red"}>{attempt.passed ? "Passed" : "Not Passed"}</Tag> },
+                  {
+                    title: "Result",
+                    render: (_, attempt) =>
+                      ["submitted", "auto_submitted", "graded"].includes(attempt.status)
+                        ? <Tag color={attempt.passed ? "green" : "red"}>{attempt.passed ? "Passed" : "Not Passed"}</Tag>
+                        : <Tag color="orange">Remaining</Tag>,
+                  },
                   { title: "Submitted", render: (_, attempt) => attempt.submittedAt ? dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A") : "Not submitted" },
                 ]}
               />
@@ -1380,6 +1615,8 @@ const TestStudio = ({ setupMode = false }) => {
           </div>
         ) : null}
       </Modal>
+
+      {renderReassignModal()}
 
     </div>
   );

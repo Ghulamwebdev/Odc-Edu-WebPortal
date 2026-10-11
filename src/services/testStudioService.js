@@ -99,6 +99,15 @@ export const resumeTestTimer = async (id) => {
   }
 };
 
+export const reassignRemainingStudents = async (id, payload) => {
+  try {
+    const response = await api.post(`/test-studio/tests/${id}/reassign-remaining`, payload);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
 export const updateTestPaperHeader = async (id, payload) => {
   try {
     const response = await api.put(`/test-studio/tests/${id}/paper-header`, payload);

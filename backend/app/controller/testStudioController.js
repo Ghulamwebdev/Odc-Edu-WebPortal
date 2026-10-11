@@ -638,9 +638,40 @@ export const getTestAttempts = async (req, res) => {
       .sort({ submittedAt: -1, updatedAt: -1 })
       .lean();
 
+    const batchIds = (test.assignedBatches || []).map((item) => item.batch);
+    const excluded = new Set((test.excludedStudents || []).map((item) => String(item.student)));
+    const enrollments = batchIds.length
+      ? await Enrollment.find({ batch: { $in: batchIds }, status: { $in: ["Active", "Completed", "On Hold"] } })
+          .populate("student", "studentName registrationNo mobileNumber emailAddress")
+          .populate("batch", "batchName batchCode")
+          .lean()
+      : [];
+    const attemptStudentIds = new Set(attempts.map((attempt) => String(attempt.student?._id || attempt.student)));
+    const missingAttempts = [];
+    const seenMissingStudents = new Set();
+
+    enrollments.forEach((enrollment) => {
+      const studentId = String(enrollment.student?._id || enrollment.student || "");
+      if (!studentId || excluded.has(studentId) || attemptStudentIds.has(studentId) || seenMissingStudents.has(studentId)) return;
+      seenMissingStudents.add(studentId);
+      missingAttempts.push({
+        _id: `not-started-${test._id}-${studentId}`,
+        status: "not_started",
+        student: enrollment.student,
+        batch: enrollment.batch,
+        startedAt: null,
+        submittedAt: null,
+        score: 0,
+        percentage: 0,
+        passed: false,
+        answers: [],
+        synthetic: true,
+      });
+    });
+
     res.status(200).json({
       success: true,
-      data: attempts.map((attempt) => ({
+      data: [...attempts, ...missingAttempts].map((attempt) => ({
         _id: attempt._id,
         status: attempt.status,
         student: attempt.student,
@@ -652,6 +683,69 @@ export const getTestAttempts = async (req, res) => {
         passed: attempt.passed,
         answers: attempt.answers,
       })),
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+export const reassignRemainingStudents = async (req, res) => {
+  try {
+    const test = await Test.findOne({ _id: req.params.id, isDeleted: false });
+    if (!test) return res.status(404).json({ success: false, message: "Test not found" });
+    await assertCourseAccess(req, test.course);
+    if (!(req.currentUser?.isSuperAdmin || req.user?.isSuperAdmin) && String(test.teacherUser) !== String(getUserId(req))) {
+      return res.status(403).json({ success: false, message: "You can only reassign your own tests." });
+    }
+
+    const { startAt, endAt, durationMinutes } = req.body || {};
+    const nextStart = startAt ? new Date(startAt) : null;
+    const nextEnd = endAt ? new Date(endAt) : null;
+    if (!nextStart || !nextEnd || Number.isNaN(nextStart.getTime()) || Number.isNaN(nextEnd.getTime())) {
+      return res.status(400).json({ success: false, message: "Start and end time are required." });
+    }
+    if (nextEnd <= nextStart) {
+      return res.status(400).json({ success: false, message: "End time must be after start time." });
+    }
+
+    const before = test.toObject();
+    const submittedStatuses = ["submitted", "auto_submitted", "graded"];
+    const remainingAttempts = await TestAttempt.find({
+      test: test._id,
+      status: { $nin: submittedStatuses },
+    });
+
+    await Promise.all(
+      remainingAttempts.map((attempt) => {
+        attempt.status = "not_started";
+        attempt.startedAt = null;
+        attempt.expiresAt = null;
+        attempt.submittedAt = null;
+        attempt.lastAutosaveAt = null;
+        return attempt.save();
+      }),
+    );
+
+    test.schedule.startAt = nextStart;
+    test.schedule.endAt = nextEnd;
+    test.schedule.durationMinutes = Number(durationMinutes || test.schedule.durationMinutes || 60);
+    test.schedule.isPaused = false;
+    test.schedule.pausedAt = null;
+    test.status = computeLifecycleStatus({ ...test.toObject(), status: "scheduled" });
+    if (test.status === "draft" || test.status === "completed") test.status = "scheduled";
+    await test.save();
+
+    const stats = await attachAssignmentStats(test);
+    const remainingCount =
+      (stats.attemptCounts?.not_started || 0) +
+      (stats.attemptCounts?.in_progress || 0) +
+      (stats.attemptCounts?.expired || 0);
+
+    await createAudit(test, req, "reassigned_remaining", before, test.toObject(), `Remaining students: ${remainingCount}`);
+    res.status(200).json({
+      success: true,
+      message: `Test reassigned for ${remainingCount} remaining student(s). Submitted students are kept completed.`,
+      data: stats,
     });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message });
