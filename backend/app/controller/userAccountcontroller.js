@@ -23,12 +23,12 @@ const toArray = (value) => {
     .filter(Boolean);
 };
 const unique = (values = []) => [...new Set(values.filter(Boolean).map(String))];
-const cleanSlug = (value) =>
-  String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ".")
-    .replace(/^\.+|\.+$/g, "")
-    .slice(0, 28);
+const studentNameSlug = (value) => String(value || "")
+  .normalize("NFKD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ".")
+  .replace(/^\.+|\.+$/g, "");
 
 const studentPermissions = () => normalizePermissions([{ module: "dashboard", actions: { view: true } }]);
 
@@ -51,33 +51,16 @@ const ensureStudentRole = async () => {
   });
 };
 
-const generatePassword = () =>
-  `Odc${Math.random().toString(36).slice(2, 6)}${Math.floor(1000 + Math.random() * 9000)}!`;
+const buildStudentEmail = (student, suffix = "") =>
+  `odc${studentNameSlug(student?.studentName) || "student"}${suffix ? `.${suffix}` : ""}@gmail.com`;
 
-const buildStudentEmail = async (student, academyEmail = "odcacdemy@gmail.com") => {
-  const [academyLocalRaw, academyDomainRaw] = String(academyEmail || "odcacdemy@gmail.com")
-    .toLowerCase()
-    .split("@");
-  const academyLocal = cleanSlug(academyLocalRaw) || "odcacdemy";
-  const academyDomain = academyDomainRaw || "gmail.com";
-  const firstName = cleanSlug(String(student?.studentName || "student").split(/\s+/)[0]) || "student";
-  const code = cleanSlug(student?.registrationNo || student?._id || Date.now()).replace(/\./g, "");
-  const base = `${academyLocal}.${firstName}${code ? `.${code}` : ""}`;
-  let email = `${base}@${academyDomain}`;
-  let counter = 1;
-
-  while (await UserAuth.exists({ email })) {
-    email = `${base}.${counter}@${academyDomain}`;
-    counter += 1;
-  }
-
-  return email;
-};
+const buildStudentPassword = (student) =>
+  `odc${(studentNameSlug(student?.studentName) || "student").replace(/\./g, "")}`;
 
 const getSelectedEnrollmentStudents = async ({ courseIds = [], batchIds = [] }) => {
   const courseFilter = unique(courseIds);
   const batchFilter = unique(batchIds);
-  const query = { status: { $ne: "Dropped" } };
+  const query = { status: "Active" };
   if (courseFilter.length) query.course = { $in: courseFilter };
   if (batchFilter.length) query.batch = { $in: batchFilter };
 
@@ -479,6 +462,26 @@ const previewStudentPortalAccounts = async (req, res) => {
 
     const selectedStudents = await getSelectedEnrollmentStudents({ courseIds, batchIds });
     const studentIds = selectedStudents.map((item) => String(item.student._id));
+    const enrollmentFilter = { status: { $in: ["Completed", "Dropped"] } };
+    const courseFilter = unique(courseIds);
+    const batchFilter = unique(batchIds);
+    if (courseFilter.length) enrollmentFilter.course = { $in: courseFilter };
+    if (batchFilter.length) enrollmentFilter.batch = { $in: batchFilter };
+    const inactiveEnrollments = await Enrollment.find(enrollmentFilter)
+      .select("student status")
+      .lean();
+    const completedStudentIds = new Set();
+    const droppedStudentIds = new Set();
+    inactiveEnrollments.forEach((enrollment) => {
+      const studentId = String(enrollment.student || "");
+      if (!studentId) return;
+      if (enrollment.status === "Completed") completedStudentIds.add(studentId);
+      if (enrollment.status === "Dropped") droppedStudentIds.add(studentId);
+    });
+    studentIds.forEach((studentId) => {
+      completedStudentIds.delete(studentId);
+      droppedStudentIds.delete(studentId);
+    });
     const existingAccounts = await UserAuth.find({
       accountType: "student",
       student: { $in: studentIds },
@@ -504,6 +507,11 @@ const previewStudentPortalAccounts = async (req, res) => {
         totalStudents: rows.length,
         newAccounts: rows.filter((row) => !row.alreadyCreated).length,
         existingAccounts: rows.filter((row) => row.alreadyCreated).length,
+        skippedEnrollments: {
+          completed: completedStudentIds.size,
+          dropped: droppedStudentIds.size,
+          total: new Set([...completedStudentIds, ...droppedStudentIds]).size,
+        },
         students: rows,
       },
     });
@@ -516,7 +524,7 @@ const createStudentPortalAccounts = async (req, res) => {
   try {
     const courseIds = toArray(req.body.courseIds);
     const batchIds = toArray(req.body.batchIds);
-    const academyEmail = normalizeEmail(req.body.academyEmail || "odcacdemy@gmail.com");
+    const academyEmail = "odcacdemy@gmail.com";
 
     if (!courseIds.length && !batchIds.length) {
       return res.status(400).json({
@@ -532,6 +540,36 @@ const createStudentPortalAccounts = async (req, res) => {
       student: { $in: studentIds },
     });
     const existingByStudent = new Map(existingAccounts.map((account) => [String(account.student), account]));
+    const studentsNeedingAccounts = selectedStudents.filter(
+      (item) => !existingByStudent.has(String(item.student._id)),
+    );
+    const nameCounts = new Map();
+    studentsNeedingAccounts.forEach(({ student }) => {
+      const name = studentNameSlug(student.studentName) || "student";
+      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+    });
+    const emailByStudent = new Map();
+    const reservedEmails = new Set();
+    for (const { student } of studentsNeedingAccounts) {
+      const name = studentNameSlug(student.studentName) || "student";
+      const registrationSuffix = String(student.registrationNo || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      const fallbackSuffix = String(student._id).replace(/[^a-z0-9]/gi, "").slice(-8);
+      const stableSuffix = registrationSuffix || fallbackSuffix;
+      let suffix = nameCounts.get(name) > 1 ? stableSuffix : "";
+      let email = buildStudentEmail(student, suffix);
+      let counter = 2;
+
+      while (reservedEmails.has(email) || await UserAuth.exists({ email })) {
+        suffix = `${stableSuffix}${counter}`;
+        email = buildStudentEmail(student, suffix);
+        counter += 1;
+      }
+
+      reservedEmails.add(email);
+      emailByStudent.set(String(student._id), email);
+    }
     const studentRole = await ensureStudentRole();
     const created = [];
     const skipped = [];
@@ -553,8 +591,8 @@ const createStudentPortalAccounts = async (req, res) => {
         continue;
       }
 
-      const initialPassword = generatePassword();
-      const email = await buildStudentEmail(item.student, academyEmail);
+      const initialPassword = buildStudentPassword(item.student);
+      const email = emailByStudent.get(studentId);
       const hashedPassword = await bcrypt.hash(initialPassword, await bcrypt.genSalt(10));
       const firstName = String(item.student.studentName || "Student").split(/\s+/)[0];
       const user = await UserAuth.create({
@@ -606,6 +644,23 @@ const listStudentPortalAccounts = async (req, res) => {
     res.status(200).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: "Failed to fetch student portal accounts", error: error.message });
+  }
+};
+
+const deleteAllStudentPortalAccounts = async (req, res) => {
+  try {
+    const result = await UserAuth.deleteMany({ accountType: "student" });
+    res.status(200).json({
+      success: true,
+      message: `${result.deletedCount} student portal account${result.deletedCount === 1 ? "" : "s"} deleted. Student records and enrollments were not changed.`,
+      data: { deletedCount: result.deletedCount },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete student portal accounts",
+      error: error.message,
+    });
   }
 };
 
@@ -786,5 +841,6 @@ export {
   previewStudentPortalAccounts,
   createStudentPortalAccounts,
   listStudentPortalAccounts,
+  deleteAllStudentPortalAccounts,
   updateStudentPortalAccountStatus,
 };

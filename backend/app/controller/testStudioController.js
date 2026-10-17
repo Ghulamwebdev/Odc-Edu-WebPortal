@@ -126,7 +126,6 @@ const sanitizeQuestionForStudent = (question = {}, index = 0) => ({
 const serializeStudentTest = (test, attempt = null, now = new Date()) => {
   const plain = test.toObject ? test.toObject() : test;
   const status = computeLifecycleStatus(plain, now);
-  const startAt = plain.schedule?.startAt ? new Date(plain.schedule.startAt) : null;
   const endAt = plain.schedule?.endAt ? new Date(plain.schedule.endAt) : null;
   const canStart = status === "live" && !plain.schedule?.isPaused && (!endAt || now < endAt);
   return {
@@ -262,6 +261,7 @@ const buildTestPayload = (body = {}, currentTest = null) => {
     excludedStudents: normalizeArray(body.excludedStudentIds).map((studentId) => ({
       student: studentId,
     })),
+    wizardStep: Math.max(0, Math.min(6, Number(body.wizardStep ?? currentTest?.wizardStep ?? 0))),
     settings: {
       shuffleQuestions: Boolean(body.settings?.shuffleQuestions),
       shuffleOptions: Boolean(body.settings?.shuffleOptions),
@@ -355,11 +355,16 @@ const attachAssignmentStats = async (test) => {
   const batchIds = (plain.assignedBatches || []).map((item) => item.batch?._id || item.batch);
   const excluded = new Set((plain.excludedStudents || []).map((item) => String(item.student?._id || item.student)));
   const enrollments = batchIds.length
-    ? await Enrollment.find({ batch: { $in: batchIds }, status: { $in: ["Active", "Completed", "On Hold"] } })
+    ? await Enrollment.find({ batch: { $in: batchIds }, status: "Active" })
         .populate("student", "studentName registrationNo emailAddress isActive")
         .lean()
     : [];
-  const students = enrollments.filter((enrollment) => !excluded.has(String(enrollment.student?._id || enrollment.student)));
+  const students = enrollments.filter(
+    (enrollment) =>
+      enrollment.student?._id &&
+      enrollment.student.isActive !== false &&
+      !excluded.has(String(enrollment.student._id)),
+  );
   const attempts = await TestAttempt.find({ test: plain._id }).lean();
   const attemptCounts = attempts.reduce(
     (acc, attempt) => {
@@ -402,15 +407,18 @@ export const previewTestAssignment = async (req, res) => {
     const excluded = new Set(excludedStudentIds.map(String));
     const enrollments = await Enrollment.find({
       batch: { $in: batches.map((batch) => batch._id) },
-      status: { $in: ["Active", "Completed", "On Hold"] },
+      status: "Active",
     })
       .populate("student", "studentName registrationNo emailAddress isActive")
       .lean();
 
     const uniqueStudents = new Map();
     enrollments.forEach((enrollment) => {
-      const studentId = String(enrollment.student?._id || enrollment.student);
-      if (studentId && !excluded.has(studentId)) uniqueStudents.set(studentId, enrollment.student);
+      const student = enrollment.student;
+      const studentId = String(student?._id || "");
+      if (studentId && student.isActive !== false && !excluded.has(studentId)) {
+        uniqueStudents.set(studentId, student);
+      }
     });
 
     res.status(200).json({
@@ -641,8 +649,8 @@ export const getTestAttempts = async (req, res) => {
     const batchIds = (test.assignedBatches || []).map((item) => item.batch);
     const excluded = new Set((test.excludedStudents || []).map((item) => String(item.student)));
     const enrollments = batchIds.length
-      ? await Enrollment.find({ batch: { $in: batchIds }, status: { $in: ["Active", "Completed", "On Hold"] } })
-          .populate("student", "studentName registrationNo mobileNumber emailAddress")
+      ? await Enrollment.find({ batch: { $in: batchIds }, status: "Active" })
+          .populate("student", "studentName registrationNo mobileNumber emailAddress isActive")
           .populate("batch", "batchName batchCode")
           .lean()
       : [];
@@ -652,7 +660,13 @@ export const getTestAttempts = async (req, res) => {
 
     enrollments.forEach((enrollment) => {
       const studentId = String(enrollment.student?._id || enrollment.student || "");
-      if (!studentId || excluded.has(studentId) || attemptStudentIds.has(studentId) || seenMissingStudents.has(studentId)) return;
+      if (
+        !studentId ||
+        enrollment.student?.isActive === false ||
+        excluded.has(studentId) ||
+        attemptStudentIds.has(studentId) ||
+        seenMissingStudents.has(studentId)
+      ) return;
       seenMissingStudents.add(studentId);
       missingAttempts.push({
         _id: `not-started-${test._id}-${studentId}`,
@@ -999,23 +1013,48 @@ export const importQuestionBank = async (req, res) => {
       ? XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "", raw: false })
       : [];
     const docs = rows
-      .map((row) => normalizeQuestion({
-        questionText: row.Question || row.questionText,
-        questionType: row.Type || row.questionType || "mcq_single",
-        difficulty: String(row.Difficulty || "medium").toLowerCase(),
-        marks: row.Marks || 1,
-        options: ["Option A", "Option B", "Option C", "Option D"]
-          .map((key) => row[key])
-          .filter(Boolean)
-          .map((text, index) => ({
+      .map((row) => {
+        const correctAnswers = new Set(
+          String(row["Correct Answer"] || "")
+            .split(",")
+            .map((answer) => answer.trim().toLowerCase())
+            .filter(Boolean),
+        );
+        const questionType = String(row.Type || row.questionType || "mcq_single").trim().toLowerCase();
+        let options = ["Option A", "Option B", "Option C", "Option D"]
+          .map((key, index) => {
+            const text = String(row[key] || "").trim();
+            return text
+              ? {
+                  text,
+                  isCorrect:
+                    correctAnswers.has(String.fromCharCode(97 + index)) ||
+                    correctAnswers.has(text.toLowerCase()),
+                }
+              : null;
+          })
+          .filter(Boolean);
+        if (questionType === "true_false" && !options.length) {
+          options = ["True", "False"].map((text, index) => ({
             text,
-            isCorrect: String(row["Correct Answer"] || "").split(",").map((item) => item.trim().toUpperCase()).includes(String.fromCharCode(65 + index)),
-          })),
-        correctAnswers: String(row["Correct Answer"] || "").split(",").map((item) => item.trim()).filter(Boolean),
-        modelAnswer: row["Model Answer"] || "",
-        explanation: row.Explanation || "",
-        tags: row.Tags || "",
-      }))
+            isCorrect:
+              correctAnswers.has(String.fromCharCode(97 + index)) ||
+              correctAnswers.has(text.toLowerCase()),
+          }));
+        }
+
+        return normalizeQuestion({
+          questionText: row.Question || row.questionText,
+          questionType,
+          difficulty: String(row.Difficulty || "medium").toLowerCase(),
+          marks: row.Marks || 1,
+          options,
+          correctAnswers: [...correctAnswers],
+          modelAnswer: row["Model Answer"] || "",
+          explanation: row.Explanation || "",
+          tags: row.Tags || "",
+        });
+      })
       .filter((question) => question.questionText)
       .map((question) => ({
         owner: getUserId(req),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Button,
@@ -51,6 +51,7 @@ import {
   getQuestionBank,
   getTests,
   getTestStudioOptions,
+  importQuestionBank,
   pauseTestTimer,
   previewTestAssignment,
   publishTest,
@@ -134,6 +135,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [questionBank, setQuestionBank] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importingQuestions, setImportingQuestions] = useState(false);
+  const [formRevision, setFormRevision] = useState(0);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingTest, setEditingTest] = useState(null);
   const [currentStep, setCurrentStep] = useState(0);
@@ -144,6 +147,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [detailTest, setDetailTest] = useState(null);
   const [detailAttempts, setDetailAttempts] = useState([]);
   const [detailAttemptsLoading, setDetailAttemptsLoading] = useState(false);
+  const [localRecoveryDraft, setLocalRecoveryDraft] = useState(null);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassigning, setReassigning] = useState(false);
   const [reassignTest, setReassignTest] = useState(null);
@@ -151,12 +155,30 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [nowTick, setNowTick] = useState(dayjs());
   const [form] = Form.useForm();
   const [reassignForm] = Form.useForm();
+  const autoSaveTestIdRef = useRef(null);
+  const autoSaveTimerRef = useRef(null);
+  const autoSaveQueueRef = useRef(Promise.resolve());
+  const draftVersionRef = useRef(0);
+  const autoSaveErrorShownRef = useRef(false);
+  const localStorageErrorShownRef = useRef(false);
   const selectedCourse = Form.useWatch("course", form);
   const selectedBatchIds = Form.useWatch("batchIds", form) || [];
 
   const testStudioBasePath = employeeMode
     ? "/employee-dashboard/test-studio"
     : "/dashboard/test-studio";
+  const localDraftKey = `test-studio-draft:${adminInfo?.userData?._id || adminInfo?.userData?.email || "current"}`;
+
+  useEffect(() => {
+    if (setupMode) return;
+    try {
+      const snapshot = JSON.parse(localStorage.getItem(localDraftKey) || "null");
+      setLocalRecoveryDraft(snapshot?.values ? snapshot : null);
+    } catch (error) {
+      message.error("Could not read the browser recovery draft.");
+      console.error("Failed to read local test draft", error);
+    }
+  }, [setupMode, localDraftKey]);
 
   const loadData = async () => {
     setLoading(true);
@@ -325,6 +347,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
   const openCreateWizard = () => {
     if (!canCreateTest) return message.warning("You do not have permission to create tests.");
+    autoSaveTestIdRef.current = null;
     setEditingTest(null);
     setCurrentStep(0);
     setQuestions([emptyQuestion()]);
@@ -356,6 +379,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         },
       },
     });
+    setFormRevision((revision) => revision + 1);
     if (setupMode) {
       return;
     }
@@ -370,11 +394,13 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
   const openEditWizard = (test) => {
     if (!permissions.update) return message.warning("You do not have permission to edit tests.");
+    autoSaveTestIdRef.current = test.status === "draft" ? test._id : null;
     setEditingTest(test);
-    setCurrentStep(0);
+    setCurrentStep(Math.max(0, Math.min(6, Number(test.wizardStep || 0))));
     setQuestions((test.questions || []).map((question, index) => ({ ...question, order: index })));
     setSections(test.sections || []);
     setAssignmentPreview(null);
+    form.resetFields();
     form.setFieldsValue({
       title: test.title,
       description: test.description,
@@ -395,10 +421,11 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       excludedStudentIds: (test.excludedStudents || []).map((item) => item.student?._id || item.student),
       settings: test.settings || {},
     });
+    setFormRevision((revision) => revision + 1);
     setWizardOpen(true);
   };
 
-  const buildPayload = () => {
+  const buildPayload = useCallback(() => {
     const values = form.getFieldsValue(true);
     const cleanedQuestions = questions
       .map((question, index) => ({
@@ -411,6 +438,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     return {
       ...values,
       sections,
+      wizardStep: currentStep,
       questions: cleanedQuestions.map((question, index) => ({
         ...question,
         order: index,
@@ -427,6 +455,97 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         endAt: values.schedule?.endAt ? values.schedule.endAt.toISOString() : null,
       },
     };
+  }, [form, questions, sections, currentStep]);
+
+  const continueLocalRecoveryDraft = () => {
+    if (!localRecoveryDraft) return;
+    autoSaveTestIdRef.current = null;
+    setEditingTest(null);
+    form.setFieldsValue({
+      ...localRecoveryDraft.values,
+      schedule: {
+        ...localRecoveryDraft.values.schedule,
+        startAt: localRecoveryDraft.values.schedule?.startAt ? dayjs(localRecoveryDraft.values.schedule.startAt) : null,
+        endAt: localRecoveryDraft.values.schedule?.endAt ? dayjs(localRecoveryDraft.values.schedule.endAt) : null,
+      },
+    });
+    setQuestions(
+      Array.isArray(localRecoveryDraft.questions) && localRecoveryDraft.questions.length
+        ? localRecoveryDraft.questions
+        : [emptyQuestion()],
+    );
+    setSections(Array.isArray(localRecoveryDraft.sections) ? localRecoveryDraft.sections : []);
+    setCurrentStep(Number.isInteger(localRecoveryDraft.currentStep) ? localRecoveryDraft.currentStep : 0);
+    setAssignmentPreview(null);
+    setFormRevision((revision) => revision + 1);
+    setWizardOpen(true);
+  };
+
+  const discardLocalRecoveryDraft = () => {
+    try {
+      localStorage.removeItem(localDraftKey);
+      setLocalRecoveryDraft(null);
+    } catch (error) {
+      message.error("Could not remove the browser recovery draft.");
+      console.error("Failed to discard local test draft", error);
+    }
+  };
+
+  useEffect(() => {
+    if (!(setupMode || wizardOpen) || (editingTest && editingTest.status !== "draft")) return undefined;
+
+    const version = ++draftVersionRef.current;
+    const payload = buildPayload();
+    const snapshot = {
+      values: form.getFieldsValue(true),
+      questions,
+      sections,
+      currentStep,
+    };
+
+    try {
+      localStorage.setItem(localDraftKey, JSON.stringify(snapshot));
+      setLocalRecoveryDraft(snapshot);
+    } catch (error) {
+      if (!localStorageErrorShownRef.current) {
+        message.error("Could not save a browser recovery copy of this test.");
+        localStorageErrorShownRef.current = true;
+      }
+      console.error("Failed to save local test draft", error);
+    }
+
+    if (!String(payload.title || "").trim() || !payload.course) return undefined;
+
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      const save = autoSaveQueueRef.current.then(async () => {
+        const testId = autoSaveTestIdRef.current;
+        const response = testId
+          ? await updateTest(testId, payload)
+          : await createTest(payload);
+        autoSaveTestIdRef.current = response.data?._id || testId;
+        autoSaveErrorShownRef.current = false;
+        if (version === draftVersionRef.current) {
+          localStorage.removeItem(localDraftKey);
+          setLocalRecoveryDraft(null);
+          localStorageErrorShownRef.current = false;
+        }
+      });
+      autoSaveQueueRef.current = save.catch((error) => {
+        if (!autoSaveErrorShownRef.current) {
+          message.error(error.message || "Automatic draft saving failed. Please save the draft manually.");
+          autoSaveErrorShownRef.current = true;
+        }
+      });
+    }, 900);
+
+    return () => window.clearTimeout(autoSaveTimerRef.current);
+  }, [setupMode, wizardOpen, editingTest, formRevision, questions, sections, currentStep, buildPayload, form, localDraftKey]);
+
+  const restoreManualSave = async (payload) => {
+    window.clearTimeout(autoSaveTimerRef.current);
+    await autoSaveQueueRef.current;
+    const testId = editingTest?._id || autoSaveTestIdRef.current;
+    return testId ? updateTest(testId, payload) : createTest(payload);
   };
 
   const getPublishValidationIssues = () => {
@@ -472,10 +591,11 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         setCurrentStep(0);
         return;
       }
-      const response = editingTest
-        ? await updateTest(editingTest._id, payload)
-        : await createTest(payload);
+      const response = await restoreManualSave(payload);
       message.success(response.message || "Test saved");
+      autoSaveTestIdRef.current = null;
+      localStorage.removeItem(localDraftKey);
+      setLocalRecoveryDraft(null);
       if (setupMode) {
         navigate(testStudioBasePath);
       } else {
@@ -500,11 +620,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     setSaving(true);
     try {
       const payload = buildPayload();
-      const saveResponse = editingTest
-        ? await updateTest(editingTest._id, payload)
-        : await createTest(payload);
+      const saveResponse = await restoreManualSave(payload);
       await publishTest(saveResponse.data._id);
       message.success("Test published successfully");
+      autoSaveTestIdRef.current = null;
+      localStorage.removeItem(localDraftKey);
+      setLocalRecoveryDraft(null);
       if (setupMode) {
         navigate(testStudioBasePath);
       } else {
@@ -677,6 +798,167 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     ]);
     XLSX.utils.book_append_sheet(workbook, sheet, "Questions");
     XLSX.writeFile(workbook, "test-studio-question-template.xlsx");
+  };
+
+  const handleQuestionImport = async (file) => {
+    setImportingQuestions(true);
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const sheet = workbook.SheetNames[0] ? workbook.Sheets[workbook.SheetNames[0]] : null;
+      const rows = sheet ? XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false }) : [];
+      const parsedQuestions = [];
+      const rowErrors = [];
+      const acceptedTypes = new Set(questionTypeOptions.map((option) => option.value));
+
+      rows.forEach((row, index) => {
+        const questionText = String(row.Question || row.questionText || "").trim();
+        if (!questionText) return;
+
+        const questionType = String(row.Type || row.questionType || "mcq_single").trim().toLowerCase();
+        const difficulty = String(row.Difficulty || "medium").trim().toLowerCase();
+        const marks = Number(row.Marks || 1);
+        if (!acceptedTypes.has(questionType)) {
+          rowErrors.push(`Row ${index + 2}: unsupported question type "${questionType}".`);
+          return;
+        }
+        if (!difficultyOptions.some((option) => option.value === difficulty)) {
+          rowErrors.push(`Row ${index + 2}: difficulty must be Easy, Medium, or Hard.`);
+          return;
+        }
+        if (!Number.isFinite(marks) || marks <= 0) {
+          rowErrors.push(`Row ${index + 2}: marks must be greater than zero.`);
+          return;
+        }
+
+        const answerTokens = String(row["Correct Answer"] || "")
+          .split(",")
+          .map((answer) => answer.trim().toLowerCase())
+          .filter(Boolean);
+        let options = ["Option A", "Option B", "Option C", "Option D"]
+          .map((key, optionIndex) => ({
+            text: String(row[key] || "").trim(),
+            isCorrect: answerTokens.includes(String.fromCharCode(97 + optionIndex)),
+          }))
+          .filter((option) => option.text);
+        if (questionType === "true_false" && !options.length) {
+          options = [
+            { text: "True", isCorrect: answerTokens.includes("true") || answerTokens.includes("a") },
+            { text: "False", isCorrect: answerTokens.includes("false") || answerTokens.includes("b") },
+          ];
+        }
+        if (["mcq_single", "mcq_multiple", "true_false"].includes(questionType)) {
+          options = options.map((option) => ({
+            ...option,
+            isCorrect:
+              option.isCorrect ||
+              answerTokens.includes(option.text.toLowerCase()),
+          }));
+          const correctCount = options.filter((option) => option.isCorrect).length;
+          if (!options.length || !correctCount || (questionType !== "mcq_multiple" && correctCount > 1)) {
+            rowErrors.push(`Row ${index + 2}: provide options and a valid correct answer.`);
+            return;
+          }
+        }
+
+        parsedQuestions.push({
+          ...emptyQuestion(questions.length + parsedQuestions.length, questionType),
+          difficulty,
+          questionText,
+          options,
+          marks,
+          modelAnswer: String(row["Model Answer"] || "").trim(),
+          explanation: String(row.Explanation || "").trim(),
+          tags: String(row.Tags || "").split(",").map((tag) => tag.trim()).filter(Boolean),
+        });
+      });
+
+      if (rowErrors.length) {
+        message.error(rowErrors.slice(0, 3).join(" "));
+        return Upload.LIST_IGNORE;
+      }
+      if (!parsedQuestions.length) {
+        message.error("No questions were found. Use the downloaded template and add question text.");
+        return Upload.LIST_IGNORE;
+      }
+
+      const updatedQuestions = [...questions, ...parsedQuestions];
+      setQuestions(updatedQuestions);
+      form.setFieldValue(
+        "totalMarks",
+        updatedQuestions.reduce(
+          (sum, question) => sum + (String(question.questionText || "").trim() ? Number(question.marks || 0) : 0),
+          0,
+        ),
+      );
+
+      let bankImportError = "";
+      if (selectedCourse) {
+        try {
+          const response = await importQuestionBank({ file, courseId: selectedCourse });
+          if (!response.data?.imported) {
+            bankImportError = "No questions were saved to the Question Bank";
+          }
+        } catch (error) {
+          bankImportError = error.message || "Question Bank import failed";
+        }
+      }
+      if (bankImportError) {
+        Modal.warning({
+          title: "Questions added to this test",
+          centered: true,
+          width: 520,
+          okText: "Continue editing",
+          content: (
+            <div className="space-y-2">
+              <p>
+                <strong>{parsedQuestions.length}</strong> question(s) were added to the current test.
+              </p>
+              <p>
+                They were not saved to the Question Bank. {bankImportError}
+              </p>
+              <p>Select the test course and import again if you also want to add these questions to its bank.</p>
+            </div>
+          ),
+        });
+      } else if (!selectedCourse) {
+        Modal.warning({
+          title: "Questions added to this test",
+          centered: true,
+          width: 520,
+          okText: "Continue editing",
+          content: (
+            <div className="space-y-2">
+              <p>
+                <strong>{parsedQuestions.length}</strong> question(s) were added to the current test.
+              </p>
+              <p>The questions are ready to edit and will be included when you save the test as a draft.</p>
+              <p>Select a course before importing if you also want to save the questions to the Question Bank.</p>
+            </div>
+          ),
+        });
+      } else {
+        Modal.success({
+          title: "Question import complete",
+          centered: true,
+          width: 520,
+          okText: "Continue editing",
+          content: (
+            <div className="space-y-2">
+              <p>
+                <strong>{parsedQuestions.length}</strong> question(s) were added to the current test.
+              </p>
+              <p>The questions were also saved to the Question Bank for the selected course.</p>
+              <p>Review the imported questions, then save the test as a draft or continue setting it up.</p>
+            </div>
+          ),
+        });
+      }
+    } catch (error) {
+      message.error(error.message || "Could not read this question file.");
+    } finally {
+      setImportingQuestions(false);
+    }
+    return Upload.LIST_IGNORE;
   };
 
   const addPdfText = (doc, text, x, y, options = {}) => {
@@ -1013,13 +1295,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         <Button icon={<FileExcelOutlined />} onClick={importTemplate}>Download Import Template</Button>
         <Upload
           accept=".xlsx,.xls,.csv"
-          beforeUpload={(file) => {
-            message.info("Bulk import API is ready. Use the Question Bank import endpoint from the next refinement pass.");
-            return Upload.LIST_IGNORE;
-          }}
+          beforeUpload={handleQuestionImport}
           showUploadList={false}
         >
-          <Button icon={<FileExcelOutlined />}>Import Questions</Button>
+          <Button icon={<FileExcelOutlined />} loading={importingQuestions}>Import Questions</Button>
         </Upload>
       </div>
       {questionBank.length ? (
@@ -1181,7 +1460,6 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   );
 
   const renderReviewStep = () => {
-    const values = form.getFieldsValue(true);
     const nonEmptyQuestions = questions.filter((question) =>
       String(question.questionText || "").trim(),
     );
@@ -1228,7 +1506,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <Steps current={currentStep} items={stepItems} className="mb-6" />
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={() => setFormRevision((revision) => revision + 1)}>
           {renderCurrentStep()}
         </Form>
         <div className="mt-6 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-4">
@@ -1442,7 +1720,15 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadTestPaperPdf(test)}>
             PDF
           </Button>
-          {canUpdateTest && !["live", "completed"].includes(test.status) ? <Button size="small" icon={<EditOutlined />} onClick={() => openEditWizard(test)} /> : null}
+          {canUpdateTest && !["live", "completed"].includes(test.status) ? (
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => openEditWizard(test)}
+            >
+              {test.status === "draft" ? "Continue Draft" : "Edit"}
+            </Button>
+          ) : null}
           {canCreateTest ? <Button size="small" icon={<CopyOutlined />} onClick={async () => { await duplicateTest(test._id); message.success("Test duplicated"); loadData(); }} /> : null}
           {canPublishTest && test.status === "draft" ? <Button size="small" icon={<SendOutlined />} onClick={async () => { await publishTest(test._id); message.success("Test published"); loadData(); }} /> : null}
           {canPublishTest && test.status === "live" ? (
@@ -1503,6 +1789,28 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           />
           <Input.Search className="md:w-[360px]" allowClear placeholder="Search tests..." value={filters.search} onChange={(e) => setFilters((prev) => ({ ...prev, search: e.target.value }))} />
         </div>
+        {filters.status === "draft" && localRecoveryDraft ? (
+          <Card
+            size="small"
+            className="mb-4 border-blue-200 bg-blue-50"
+            title={localRecoveryDraft.values?.title || "Unsaved test"}
+            extra={
+              <Space>
+                <Button type="primary" onClick={continueLocalRecoveryDraft}>Continue Recovery</Button>
+                <Popconfirm
+                  title="Discard this browser recovery draft?"
+                  onConfirm={discardLocalRecoveryDraft}
+                >
+                  <Button danger>Discard</Button>
+                </Popconfirm>
+              </Space>
+            }
+          >
+            <span className="text-sm text-slate-600">
+              Unsaved browser recovery · Resume at {stepItems[localRecoveryDraft.currentStep]?.title || "Basic"} step
+            </span>
+          </Card>
+        ) : null}
         {tests.length ? (
           <Table rowKey="_id" loading={loading} columns={columns} dataSource={filteredTests} scroll={{ x: "max-content" }} />
         ) : (
@@ -1533,7 +1841,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         ]}
       >
         <Steps current={currentStep} items={stepItems} className="mb-6" />
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={() => setFormRevision((revision) => revision + 1)}>
           {renderCurrentStep()}
         </Form>
       </Modal>
