@@ -11,6 +11,7 @@ import {
   previewStudentPortalAccounts,
   createStudentPortalAccounts,
   listStudentPortalAccounts,
+  deleteAllStudentPortalAccounts,
   updateStudentPortalAccountStatus,
 } from "../controller/userAccountcontroller.js";
 import authMiddleware from "../midlewear/authMiddleware.js";
@@ -39,6 +40,7 @@ accountRoute.put("/:id/role", authMiddleware, requireAuth, superAdminOnly, updat
 accountRoute.put("/:id/status", authMiddleware, requireAuth, superAdminOnly, updateUserStatus);
 accountRoute.get("/me/permissions", authMiddleware, requireAuth, getMyPermissions);
 accountRoute.get("/student-portal-accounts", authMiddleware, requireAuth, superAdminOnly, listStudentPortalAccounts);
+accountRoute.delete("/student-portal-accounts", authMiddleware, requireAuth, superAdminOnly, deleteAllStudentPortalAccounts);
 accountRoute.post("/student-portal-accounts/preview", authMiddleware, requireAuth, superAdminOnly, previewStudentPortalAccounts);
 accountRoute.post("/student-portal-accounts/bulk", authMiddleware, requireAuth, superAdminOnly, createStudentPortalAccounts);
 accountRoute.patch("/student-portal-accounts/:id/status", authMiddleware, requireAuth, superAdminOnly, updateStudentPortalAccountStatus);

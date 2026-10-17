@@ -9,6 +9,15 @@ export const getStudentPortalAccounts = async () => {
   }
 };
 
+export const deleteAllStudentPortalAccounts = async () => {
+  try {
+    const response = await api.delete("/user/student-portal-accounts");
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
 export const previewStudentPortalAccounts = async (payload) => {
   try {
     const response = await api.post("/user/student-portal-accounts/preview", payload);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Button,
   Empty,
   Form,
@@ -25,6 +26,7 @@ import { getAllBatches } from "../../services/batchService";
 import { getCourses } from "../../services/feeService";
 import {
   createStudentPortalAccounts,
+  deleteAllStudentPortalAccounts,
   getStudentPortalAccounts,
   previewStudentPortalAccounts,
   updateStudentPortalAccountStatus,
@@ -38,6 +40,9 @@ const StudentPortalAccounts = () => {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [searchText, setSearchText] = useState("");
 
   const loadData = async () => {
@@ -62,18 +67,6 @@ const StudentPortalAccounts = () => {
     loadData();
   }, []);
 
-  const batchAccountCounts = useMemo(() => {
-    const counts = new Map();
-    accounts.forEach((account) => {
-      (account.batches || []).forEach((batch) => {
-        const batchId = String(batch?._id || batch || "");
-        if (!batchId) return;
-        counts.set(batchId, (counts.get(batchId) || 0) + 1);
-      });
-    });
-    return counts;
-  }, [accounts]);
-
   const courseOptions = useMemo(
     () =>
       courses.map((course) => ({
@@ -85,44 +78,12 @@ const StudentPortalAccounts = () => {
 
   const batchOptions = useMemo(
     () =>
-      batches.map((batch) => {
-        const totalStudents = Number(batch.currentStudents || 0);
-        const existingAccounts = batchAccountCounts.get(String(batch._id)) || 0;
-        const allAccountsCreated = totalStudents > 0 && existingAccounts >= totalStudents;
-        const noStudents = totalStudents <= 0;
-        const disabled = allAccountsCreated || noStudents;
-        const disabledReason = allAccountsCreated
-          ? "All student accounts already created"
-          : noStudents
-            ? "No enrolled students"
-            : "";
-
-        return {
-          label: (
-            <div className="flex min-w-0 items-center justify-between gap-3">
-              <span className="truncate">{batch.batchName} ({batch.batchCode})</span>
-              {disabled ? (
-                <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                  {disabledReason}
-                </span>
-              ) : (
-                <span className="shrink-0 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700">
-                  {Math.max(totalStudents - existingAccounts, 0)} fresh
-                </span>
-              )}
-            </div>
-          ),
-          value: batch._id,
-          disabled,
-          searchLabel: `${batch.batchName} ${batch.batchCode} ${disabledReason}`,
-        };
-      }),
-    [batches, batchAccountCounts],
-  );
-
-  const freshBatchIds = useMemo(
-    () => batchOptions.filter((batch) => !batch.disabled).map((batch) => batch.value),
-    [batchOptions],
+      batches.map((batch) => ({
+        label: `${batch.batchName} (${batch.batchCode})`,
+        value: batch._id,
+        searchLabel: `${batch.batchName} ${batch.batchCode}`,
+      })),
+    [batches],
   );
 
   const filteredAccounts = useMemo(() => {
@@ -157,13 +118,14 @@ const StudentPortalAccounts = () => {
     }
   };
 
-  const selectAllFreshBatches = () => {
-    if (!freshBatchIds.length) {
-      message.info("No fresh batches found. All enrolled students already have portal accounts.");
+  const selectAllBatches = () => {
+    if (!batchOptions.length) {
+      message.info("No batches are available.");
       return;
     }
-    form.setFieldValue("batchIds", freshBatchIds);
-    message.success(`${freshBatchIds.length} fresh batch${freshBatchIds.length === 1 ? "" : "es"} selected`);
+    const batchIds = batchOptions.map((batch) => batch.value);
+    form.setFieldValue("batchIds", batchIds);
+    message.success(`${batchIds.length} batch${batchIds.length === 1 ? "" : "es"} selected`);
   };
 
   const handleCreate = async () => {
@@ -180,6 +142,23 @@ const StudentPortalAccounts = () => {
       message.error(error.message || "Failed to create accounts");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (deleteConfirmation !== "DELETE") return;
+    setDeletingAll(true);
+    try {
+      const response = await deleteAllStudentPortalAccounts();
+      message.success(response.message || "All student portal accounts deleted.");
+      setDeleteAllOpen(false);
+      setDeleteConfirmation("");
+      setPreview(null);
+      await loadData();
+    } catch (error) {
+      message.error(error.message || "Failed to delete student portal accounts");
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -296,21 +275,21 @@ const StudentPortalAccounts = () => {
       </div>
 
       <div className="rounded-[16px] border border-slate-200 bg-white p-4 md:p-5">
-        <Form form={form} layout="vertical" initialValues={{ academyEmail: "odcacdemy@gmail.com" }}>
+        <Form form={form} layout="vertical">
           <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
               <div className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#8ea2c4]">
                 Create New Student Accounts
               </div>
               <div className="mt-1 text-[11px] text-[#64748b]">
-                Select fresh batches only. Completed batches are disabled.
+                Only active students enrolled in the selected courses and batches are included.
               </div>
             </div>
-            <Button className="h-9 rounded-lg" onClick={selectAllFreshBatches}>
-              Select All Fresh Batches
+            <Button className="h-9 rounded-lg" onClick={selectAllBatches}>
+              Select All Batches
             </Button>
           </div>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Form.Item name="courseIds" label="Courses">
               <Select
                 className="course-multi-select student-portal-control"
@@ -337,13 +316,6 @@ const StudentPortalAccounts = () => {
                 maxTagPlaceholder={(omittedValues) => `+${omittedValues.length} more`}
               />
             </Form.Item>
-            <Form.Item
-              name="academyEmail"
-              label="Academy Email Base"
-              rules={[{ type: "email", message: "Enter a valid email" }]}
-            >
-              <Input className="form-input student-portal-control" placeholder="odcacdemy@gmail.com" />
-            </Form.Item>
             <Form.Item label=" ">
               <Button
                 type="primary"
@@ -369,13 +341,23 @@ const StudentPortalAccounts = () => {
               {filteredAccounts.length} account{filteredAccounts.length === 1 ? "" : "s"} found
             </div>
           </div>
-          <Input.Search
-            allowClear
-            className="student-portal-search md:w-[430px]"
-            placeholder="Search by student, email, course, batch..."
-            value={searchText}
-            onChange={(event) => setSearchText(event.target.value)}
-          />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input.Search
+              allowClear
+              className="student-portal-search md:w-[430px]"
+              placeholder="Search by student, email, course, batch..."
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+            />
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!accounts.length}
+              onClick={() => setDeleteAllOpen(true)}
+            >
+              Delete All Accounts
+            </Button>
+          </div>
         </div>
         {accounts.length ? (
           <Table
@@ -399,12 +381,15 @@ const StudentPortalAccounts = () => {
         onOk={handleCreate}
         confirmLoading={creating}
         okText="Create Accounts"
-        okButtonProps={{ className: "!bg-primary !border-primary" }}
+        okButtonProps={{
+          className: "!bg-primary !border-primary",
+          disabled: !preview?.totalStudents,
+        }}
         width={760}
       >
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           <div className="rounded-lg border border-slate-200 p-3">
-            <div className="text-xs text-slate-500">Selected Students</div>
+            <div className="text-xs text-slate-500">Active Students</div>
             <div className="text-xl font-ArialBold text-primary">{preview?.totalStudents || 0}</div>
           </div>
           <div className="rounded-lg border border-slate-200 p-3">
@@ -415,7 +400,28 @@ const StudentPortalAccounts = () => {
             <div className="text-xs text-slate-500">Already Created</div>
             <div className="text-xl font-ArialBold text-amber-700">{preview?.existingAccounts || 0}</div>
           </div>
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">Pass-outs</div>
+            <div className="text-xl font-ArialBold text-slate-600">{preview?.skippedEnrollments?.completed || 0}</div>
+          </div>
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="text-xs text-slate-500">Dropouts</div>
+            <div className="text-xl font-ArialBold text-red-600">{preview?.skippedEnrollments?.dropped || 0}</div>
+          </div>
         </div>
+        {(preview?.skippedEnrollments?.total > 0 || !preview?.totalStudents) ? (
+          <Alert
+            className="mt-4"
+            type="warning"
+            showIcon
+            message={
+              preview?.totalStudents
+                ? `${preview.skippedEnrollments.total} pass-out/dropout student(s) will be skipped.`
+                : "No active students are available for account creation."
+            }
+            description="Only currently active enrollments are eligible. Pass-outs and dropouts will not have accounts created."
+          />
+        ) : null}
         <div className="mt-4 max-h-[280px] overflow-auto rounded-lg border border-slate-200">
           {(preview?.students || []).map((student) => (
             <div key={student.studentId} className="flex items-center justify-between border-b border-slate-100 px-3 py-2 last:border-b-0">
@@ -429,6 +435,33 @@ const StudentPortalAccounts = () => {
             </div>
           ))}
         </div>
+      </Modal>
+
+      <Modal
+        title="Delete all student portal accounts?"
+        open={deleteAllOpen}
+        onCancel={() => {
+          if (deletingAll) return;
+          setDeleteAllOpen(false);
+          setDeleteConfirmation("");
+        }}
+        onOk={handleDeleteAll}
+        confirmLoading={deletingAll}
+        okText="Delete All Accounts"
+        okButtonProps={{ danger: true, disabled: deleteConfirmation !== "DELETE" }}
+        cancelButtonProps={{ disabled: deletingAll }}
+      >
+        <p>
+          This permanently deletes {accounts.length} student portal login account(s). Student admission records,
+          course and batch enrollments, and non-student accounts will remain unchanged.
+        </p>
+        <p className="mt-3">Type <strong>DELETE</strong> to confirm.</p>
+        <Input
+          autoComplete="off"
+          value={deleteConfirmation}
+          onChange={(event) => setDeleteConfirmation(event.target.value)}
+          disabled={deletingAll}
+        />
       </Modal>
     </div>
   );
