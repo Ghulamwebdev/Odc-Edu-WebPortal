@@ -7,6 +7,7 @@ import {
   deleteTest,
   duplicateTest,
   getMyStudentTests,
+  getMyStudentTestReview,
   getTeacherPaperHeader,
   getQuestionBank,
   getTeacherTestStudioOptions,
@@ -17,6 +18,7 @@ import {
   pauseTestTimer,
   previewTestAssignment,
   publishTest,
+  publishTestResults,
   reassignRemainingStudents,
   resumeTestTimer,
   saveTest,
@@ -36,6 +38,7 @@ const upload = multer({
 router.use(authMiddleware);
 
 router.get("/student/tests", requireAuth, getMyStudentTests);
+router.get("/student/tests/:id/review", requireAuth, getMyStudentTestReview);
 router.post("/student/tests/:id/start", requireAuth, startMyStudentTest);
 router.post("/student/tests/:id/submit", requireAuth, submitMyStudentTest);
 
@@ -49,6 +52,7 @@ router.get("/tests/:id", authorize("test_studio", "view"), getTestById);
 router.get("/tests/:id/attempts", authorize("test_studio", "view"), getTestAttempts);
 router.put("/tests/:id", authorize("test_studio", "update"), updateTest);
 router.post("/tests/:id/publish", authorize("test_studio", "approve"), publishTest);
+router.post("/tests/:id/publish-results", authorize("test_studio", "approve"), publishTestResults);
 router.post("/tests/:id/pause", authorize("test_studio", "approve"), pauseTestTimer);
 router.post("/tests/:id/resume", authorize("test_studio", "approve"), resumeTestTimer);
 router.post("/tests/:id/reassign-remaining", authorize("test_studio", "approve"), reassignRemainingStudents);

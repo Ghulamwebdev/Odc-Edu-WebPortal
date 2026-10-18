@@ -81,6 +81,15 @@ export const publishTest = async (id) => {
   }
 };
 
+export const publishTestResults = async (id) => {
+  try {
+    const response = await api.post(`/test-studio/tests/${id}/publish-results`);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
 export const pauseTestTimer = async (id) => {
   try {
     const response = await api.post(`/test-studio/tests/${id}/pause`);
@@ -162,6 +171,15 @@ export const importQuestionBank = async ({ file, courseId, topic }) => {
 export const getMyStudentTests = async () => {
   try {
     const response = await api.get("/test-studio/student/tests");
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
+export const getMyStudentTestReview = async (id) => {
+  try {
+    const response = await api.get(`/test-studio/student/tests/${id}/review`);
     return response.data;
   } catch (error) {
     throw error.response?.data || { message: "Something went wrong" };

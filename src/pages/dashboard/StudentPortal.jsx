@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Avatar,
@@ -14,12 +14,14 @@ import {
   Radio,
   Space,
   Table,
+  Tabs,
   Tag,
   Upload,
   message,
 } from "antd";
 import {
   BookOutlined,
+  EyeOutlined,
   LockOutlined,
   LogoutOutlined,
   SaveOutlined,
@@ -33,6 +35,7 @@ import dayjs from "dayjs";
 import { getAdminInformation, updateAdminInfo } from "../../services/adminService";
 import {
   getMyStudentTests,
+  getMyStudentTestReview,
   startMyStudentTest,
   submitMyStudentTest,
 } from "../../services/testStudioService";
@@ -57,11 +60,20 @@ const StudentPortal = () => {
   const [selectedCourseInfo, setSelectedCourseInfo] = useState(null);
   const [studentTests, setStudentTests] = useState([]);
   const [testsLoading, setTestsLoading] = useState(false);
+  const [studentTestsView, setStudentTestsView] = useState("upcoming");
+  const [completedTestReview, setCompletedTestReview] = useState(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
   const [activePaper, setActivePaper] = useState(null);
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [securityWarningCount, setSecurityWarningCount] = useState(0);
   const [submittingTest, setSubmittingTest] = useState(false);
   const [nowTick, setNowTick] = useState(dayjs());
+  const activePaperRef = useRef(null);
+  const submitTestRef = useRef(null);
+  const securityWarningCountRef = useRef(0);
+  const autoSubmitTriggeredRef = useRef(false);
+  const submissionInProgressRef = useRef(false);
   const user = adminInfo?.userData;
   const profileImage = getProfileImageSrc(user?.profile);
 
@@ -168,22 +180,64 @@ const StudentPortal = () => {
     return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
   };
 
-  const startTest = async (testId) => {
+  const startTest = async (test) => {
     try {
-      const response = await startMyStudentTest(testId);
-      setActivePaper(response.data?.test || null);
-      setAnswers({});
+      const requireFullScreen =
+        test.settings?.antiCheating?.requireFullScreen === true;
+      if (requireFullScreen && !document.fullscreenElement) {
+        if (!document.documentElement.requestFullscreen) {
+          message.error("This browser does not support the required full-screen mode.");
+          return;
+        }
+        try {
+          await document.documentElement.requestFullscreen();
+        } catch {
+          message.error("Full-screen mode is required to start this test. Please allow it and try again.");
+          return;
+        }
+      }
+
+      autoSubmitTriggeredRef.current = false;
+      securityWarningCountRef.current = 0;
+      setSecurityWarningCount(0);
+      const response = await startMyStudentTest(test._id);
+      const paper = response.data?.test || null;
+      const questionById = new Map(
+        (paper?.questions || []).map((question) => [String(question._id), question]),
+      );
+      const restoredAnswers = (response.data?.attempt?.answers || []).reduce(
+        (result, answer) => {
+          const question = questionById.get(String(answer.questionId));
+          result[answer.questionId] =
+            question?.questionType === "mcq_multiple"
+              ? answer.selectedOptions || []
+              : answer.selectedOptions?.length
+                ? answer.selectedOptions[0]
+                : answer.textAnswer || "";
+          return result;
+        },
+        {},
+      );
+      setActivePaper(paper);
+      setAnswers(restoredAnswers);
       setActiveQuestionIndex(0);
     } catch (error) {
+      if (!activePaperRef.current && document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch((fullscreenError) => {
+          console.error("Could not exit full-screen after test start failed", fullscreenError);
+        });
+      }
       message.error(error.message || "Failed to start test");
     }
   };
 
-  const submitTest = async (auto = false) => {
-    if (!activePaper?._id || submittingTest) return;
+  const submitTest = async (auto = false, autoSubmitReason = "time") => {
+    if (!activePaper?._id || submissionInProgressRef.current) return;
+    submissionInProgressRef.current = true;
     setSubmittingTest(true);
     try {
       const payload = {
+        autoSubmitted: auto,
         answers: (activePaper.questions || []).map((question) => ({
           questionId: question._id,
           selectedOptions: Array.isArray(answers[question._id])
@@ -195,21 +249,154 @@ const StudentPortal = () => {
         })),
       };
       const response = await submitMyStudentTest(activePaper._id, payload);
-      message.success(auto ? "Time ended. Test auto-submitted." : "Test submitted successfully");
+      message.success(
+        auto
+          ? autoSubmitReason === "security"
+            ? "Test auto-submitted after security violations."
+            : "Time ended. Test auto-submitted."
+          : "Test submitted successfully",
+      );
+      if (response.data?.resultVisible || activePaper.settings?.allowReview) {
+        Modal.info({
+          title: response.data?.resultVisible ? "Test Result" : "Test Submitted",
+          width: 640,
+          content: (
+            <div className="space-y-3">
+              {response.data?.resultVisible ? (
+                <p>
+                  Score: {response.data.score || 0} ({response.data.percentage || 0}%).{" "}
+                  {response.data.passed ? "Passed" : "Not passed"}
+                </p>
+              ) : (
+                <p>Your result will be available according to your teacher&apos;s result settings.</p>
+              )}
+              {activePaper.settings?.allowReview ? (
+                <div className="max-h-[50vh] space-y-3 overflow-y-auto">
+                  {(activePaper.questions || []).map((question, index) => {
+                    const answer = answers[question._id];
+                    const selectedOptions = Array.isArray(answer)
+                      ? answer
+                      : answer
+                        ? [answer]
+                        : [];
+                    const answerText = typeof answer === "string" &&
+                      !question.options?.some((option) => option._id === answer)
+                      ? answer
+                      : selectedOptions
+                          .map((optionId) =>
+                            question.options?.find((option) => option._id === optionId)?.text,
+                          )
+                          .filter(Boolean)
+                          .join(", ");
+                    return (
+                      <div key={question._id} className="rounded-lg border border-slate-200 p-3">
+                        <div className="font-semibold">
+                          Q{index + 1}. {question.questionText}
+                        </div>
+                        <div className="mt-1 text-sm text-slate-600">
+                          Your answer: {answerText || "No answer"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ),
+        });
+      }
       setActivePaper(null);
       setAnswers({});
       setActiveQuestionIndex(0);
+      activePaperRef.current = null;
+      autoSubmitTriggeredRef.current = false;
+      if (
+        activePaper.settings?.antiCheating?.requireFullScreen &&
+        document.fullscreenElement &&
+        document.exitFullscreen
+      ) {
+        document.exitFullscreen().catch((error) => {
+          console.error("Could not exit full-screen after test submission", error);
+        });
+      }
       await loadStudentTests();
-      Modal.success({
-        title: "Result",
-        content: `Score: ${response.data?.score || 0} (${response.data?.percentage || 0}%). ${response.data?.passed ? "Passed" : "Not passed"}`,
-      });
     } catch (error) {
+      autoSubmitTriggeredRef.current = false;
       message.error(error.message || "Failed to submit test");
     } finally {
+      submissionInProgressRef.current = false;
       setSubmittingTest(false);
     }
   };
+
+  activePaperRef.current = activePaper;
+  submitTestRef.current = submitTest;
+
+  const recordSecurityViolation = useCallback((reason) => {
+    const paper = activePaperRef.current;
+    if (!paper || autoSubmitTriggeredRef.current) return;
+
+    const warningCount = securityWarningCountRef.current + 1;
+    securityWarningCountRef.current = warningCount;
+    setSecurityWarningCount(warningCount);
+
+    const antiCheating = paper.settings?.antiCheating || {};
+    const maxWarnings = Math.max(0, Number(antiCheating.maxWarnings ?? 3));
+    message.warning(
+      `${reason} Warning ${warningCount}${maxWarnings ? ` of ${maxWarnings}` : ""}.`,
+    );
+    if (antiCheating.autoSubmitOnViolation && warningCount >= maxWarnings) {
+      autoSubmitTriggeredRef.current = true;
+      message.error("Maximum security warnings reached. Your test is being submitted.");
+      submitTestRef.current?.(true, "security");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activePaper) return undefined;
+    const antiCheating = activePaper.settings?.antiCheating || {};
+    const preventClipboard = (event) => event.preventDefault();
+    const preventClipboardShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && ["c", "v", "x"].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+      }
+    };
+    const preventContextMenu = (event) => event.preventDefault();
+    const trackTabSwitch = () => {
+      if (document.hidden) recordSecurityViolation("Leaving the test tab is not allowed.");
+    };
+    const trackFullscreenExit = () => {
+      if (antiCheating.requireFullScreen && !document.fullscreenElement) {
+        recordSecurityViolation("Exiting full-screen mode is not allowed.");
+      }
+    };
+
+    if (antiCheating.disableCopyPaste) {
+      document.addEventListener("copy", preventClipboard);
+      document.addEventListener("cut", preventClipboard);
+      document.addEventListener("paste", preventClipboard);
+      document.addEventListener("keydown", preventClipboardShortcut);
+    }
+    if (antiCheating.disableRightClick) {
+      document.addEventListener("contextmenu", preventContextMenu);
+    }
+    if (antiCheating.trackTabSwitch) {
+      document.addEventListener("visibilitychange", trackTabSwitch);
+    }
+    if (antiCheating.requireFullScreen) {
+      document.addEventListener("fullscreenchange", trackFullscreenExit);
+    }
+
+    return () => {
+      document.removeEventListener("copy", preventClipboard);
+      document.removeEventListener("cut", preventClipboard);
+      document.removeEventListener("paste", preventClipboard);
+      document.removeEventListener("keydown", preventClipboardShortcut);
+      document.removeEventListener("contextmenu", preventContextMenu);
+      document.removeEventListener("visibilitychange", trackTabSwitch);
+      document.removeEventListener("fullscreenchange", trackFullscreenExit);
+    };
+  }, [activePaper, recordSecurityViolation]);
 
   useEffect(() => {
     if (!activePaper?.schedule?.endAt) return;
@@ -459,10 +646,22 @@ const StudentPortal = () => {
             <div>
               <h2 className="module-title !text-[20px]">{activePaper.title}</h2>
               <p className="module-subtitle">{activePaper.instructions || "Answer all questions carefully."}</p>
+              {activePaper.attemptsAllowed > 1 ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Attempt {activePaper.attemptsUsed || 1} of {activePaper.attemptsAllowed}
+                </p>
+              ) : null}
             </div>
-            <Tag color="red" className="!px-3 !py-1 !text-[13px]">
-              Time Left: {formatDuration(getRemainingMs(activePaper.schedule?.endAt))}
-            </Tag>
+            <div className="flex flex-wrap items-center gap-2">
+              {activePaper.settings?.antiCheating?.maxWarnings > 0 ? (
+                <Tag color={securityWarningCount ? "orange" : "blue"}>
+                  Warnings: {securityWarningCount}/{activePaper.settings.antiCheating.maxWarnings}
+                </Tag>
+              ) : null}
+              <Tag color="red" className="!px-3 !py-1 !text-[13px]">
+                Time Left: {formatDuration(getRemainingMs(activePaper.schedule?.endAt))}
+              </Tag>
+            </div>
           </div>
         </Card>
 
@@ -533,8 +732,28 @@ const StudentPortal = () => {
     );
   };
 
+  const openCompletedTestReview = async (testId) => {
+    setReviewLoading(true);
+    try {
+      const response = await getMyStudentTestReview(testId);
+      setCompletedTestReview(response.data || null);
+    } catch (error) {
+      message.error(error.message || "Failed to load completed test review");
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
   const renderStudentTests = () => {
     if (activePaper) return renderTestPaper();
+
+    const completedStatuses = ["submitted", "auto_submitted", "graded", "expired"];
+    const completedTests = studentTests.filter((test) =>
+      completedStatuses.includes(test.attempt?.status),
+    );
+    const upcomingTests = studentTests.filter(
+      (test) => !completedStatuses.includes(test.attempt?.status) && test.status !== "completed",
+    );
 
     const columns = [
       {
@@ -581,11 +800,25 @@ const StudentPortal = () => {
         title: "Action",
         key: "action",
         render: (_, test) => {
-          if (["submitted", "auto_submitted", "graded"].includes(test.attempt?.status)) {
-            return <Tag color={test.attempt?.passed ? "green" : "red"}>{test.attempt?.percentage || 0}%</Tag>;
-          }
           if (test.canStart) {
-            return <Button type="primary" className="!bg-primary !border-primary" onClick={() => startTest(test._id)}>Start Paper</Button>;
+            return (
+              <Button
+                type="primary"
+                className="!bg-primary !border-primary"
+                onClick={() => startTest(test)}
+              >
+                {test.attempt?.status === "in_progress"
+                  ? "Resume Test"
+                  : test.attempt?.status
+                    ? "Try Again"
+                    : "Start Paper"}
+              </Button>
+            );
+          }
+          if (["submitted", "auto_submitted", "graded"].includes(test.attempt?.status)) {
+            return test.resultVisible
+              ? <Tag color={test.attempt?.passed ? "green" : "red"}>{test.attempt?.percentage || 0}%</Tag>
+              : <Tag color="blue">Submitted</Tag>;
           }
           if (test.status === "scheduled") {
             return <span className="text-xs text-slate-500">Starts in {formatDuration(getRemainingMs(test.schedule?.startAt))}</span>;
@@ -595,28 +828,201 @@ const StudentPortal = () => {
       },
     ];
 
+    const completedColumns = [
+      {
+        title: "Test",
+        key: "test",
+        render: (_, test) => (
+          <div>
+            <div className="font-semibold text-primary">{test.title}</div>
+            <div className="text-xs text-slate-500">
+              {test.course?.courseName || "Course"} {test.topic ? `- ${test.topic}` : ""}
+            </div>
+          </div>
+        ),
+      },
+      {
+        title: "Submitted",
+        dataIndex: ["attempt", "submittedAt"],
+        render: (value) => value ? dayjs(value).format("DD MMM YYYY, hh:mm A") : "Completed",
+      },
+      {
+        title: "Questions Answered",
+        render: (_, test) =>
+          `${test.answeredQuestionCount || 0} / ${test.questionCount || 0}`,
+      },
+      {
+        title: "Unanswered",
+        dataIndex: "pendingQuestionCount",
+        render: (value) => value || 0,
+      },
+      {
+        title: "Result",
+        key: "result",
+        render: (_, test) =>
+          test.resultVisible
+            ? `${test.attempt?.score || 0} marks (${test.attempt?.percentage || 0}%)`
+            : <Tag color="blue">Not released</Tag>,
+      },
+      {
+        title: "Action",
+        key: "action",
+        render: (_, test) => (
+          <Button
+            icon={<EyeOutlined />}
+            loading={reviewLoading}
+            onClick={() => openCompletedTestReview(test._id)}
+          >
+            View Test
+          </Button>
+        ),
+      },
+    ];
+
     return (
       <div className="rounded-[16px] border border-slate-200 bg-white p-5">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <SendOutlined className="text-primary" />
-            <h2 className="module-title !text-[20px]">Upcoming Tests</h2>
+            <h2 className="module-title !text-[20px]">My Tests</h2>
           </div>
           <Button className="h-9 rounded-lg" onClick={loadStudentTests}>Refresh</Button>
         </div>
-        {studentTests.length ? (
-          <Table
-            rowKey="_id"
-            loading={testsLoading}
-            dataSource={studentTests}
-            columns={columns}
-            pagination={false}
-            scroll={{ x: "max-content" }}
-            className="student-portal-table custom-pagination-table"
-          />
-        ) : (
-          <Empty description={testsLoading ? "Loading tests..." : "No upcoming tests found"} />
-        )}
+        <Tabs
+          activeKey={studentTestsView}
+          onChange={setStudentTestsView}
+          items={[
+            {
+              key: "upcoming",
+              label: `Upcoming Tests (${upcomingTests.length})`,
+              children: upcomingTests.length ? (
+                <Table
+                  rowKey="_id"
+                  loading={testsLoading}
+                  dataSource={upcomingTests}
+                  columns={columns}
+                  pagination={false}
+                  scroll={{ x: "max-content" }}
+                  className="student-portal-table custom-pagination-table"
+                />
+              ) : (
+                <Empty description={testsLoading ? "Loading tests..." : "No upcoming tests found"} />
+              ),
+            },
+            {
+              key: "completed",
+              label: `My Completed Tests (${completedTests.length})`,
+              children: completedTests.length ? (
+                <Table
+                  rowKey="_id"
+                  loading={testsLoading}
+                  dataSource={completedTests}
+                  columns={completedColumns}
+                  pagination={false}
+                  scroll={{ x: "max-content" }}
+                  className="student-portal-table custom-pagination-table"
+                />
+              ) : (
+                <Empty description={testsLoading ? "Loading tests..." : "No completed tests yet"} />
+              ),
+            },
+          ]}
+        />
+        <Modal
+          title={completedTestReview?.title || "Completed Test"}
+          open={Boolean(completedTestReview) || reviewLoading}
+          onCancel={() => setCompletedTestReview(null)}
+          footer={null}
+          width={900}
+          destroyOnClose
+        >
+          {reviewLoading && !completedTestReview ? (
+            <Card loading />
+          ) : completedTestReview ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <Card size="small">
+                  <div className="text-xs text-slate-500">Total Questions</div>
+                  <div className="text-xl font-semibold">{completedTestReview.questionCount}</div>
+                </Card>
+                <Card size="small">
+                  <div className="text-xs text-slate-500">Answered</div>
+                  <div className="text-xl font-semibold text-green-700">
+                    {completedTestReview.answeredQuestionCount}
+                  </div>
+                </Card>
+                <Card size="small">
+                  <div className="text-xs text-slate-500">Unanswered</div>
+                  <div className="text-xl font-semibold text-orange-600">
+                    {completedTestReview.pendingQuestionCount}
+                  </div>
+                </Card>
+                <Card size="small">
+                  <div className="text-xs text-slate-500">Result</div>
+                  <div className="text-xl font-semibold">
+                    {completedTestReview.resultVisible
+                      ? `${completedTestReview.score || 0} / ${completedTestReview.totalMarks || 0}`
+                      : "Not released"}
+                  </div>
+                </Card>
+              </div>
+              <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+                {completedTestReview.questions.map((question, index) => (
+                  <Card
+                    key={question._id}
+                    size="small"
+                    title={`Question ${index + 1} · ${question.marks || 0} marks`}
+                    extra={
+                      <Tag color={question.answered ? "green" : "orange"}>
+                        {question.answered ? "Answered" : "Unanswered"}
+                      </Tag>
+                    }
+                  >
+                    <div className="mb-3 font-semibold text-primary">{question.questionText}</div>
+                    {question.imageUrl ? (
+                      <img
+                        src={question.imageUrl}
+                        alt={`Question ${index + 1}`}
+                        className="mb-3 max-h-[220px] rounded-lg object-contain"
+                      />
+                    ) : null}
+                    {question.options?.length ? (
+                      <div className="space-y-2">
+                        {question.options.map((option) => (
+                          <div
+                            key={option._id}
+                            className={`rounded-lg border px-3 py-2 ${
+                              option.selected
+                                ? "border-blue-400 bg-blue-50"
+                                : "border-slate-200"
+                            }`}
+                          >
+                            {question.questionType === "mcq_multiple" ? (
+                              <Checkbox checked={option.selected} disabled>
+                                {option.text}
+                              </Checkbox>
+                            ) : (
+                              <Radio checked={option.selected} disabled>
+                                {option.text}
+                              </Radio>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-xs font-semibold uppercase text-slate-500">
+                          Student Answer
+                        </div>
+                        <div>{question.textAnswer || "No answer provided"}</div>
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </Modal>
       </div>
     );
   };

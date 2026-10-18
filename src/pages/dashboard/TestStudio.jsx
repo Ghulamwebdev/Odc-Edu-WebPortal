@@ -55,6 +55,7 @@ import {
   pauseTestTimer,
   previewTestAssignment,
   publishTest,
+  publishTestResults,
   reassignRemainingStudents,
   resumeTestTimer,
   updateTest,
@@ -149,6 +150,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [detailTest, setDetailTest] = useState(null);
   const [detailAttempts, setDetailAttempts] = useState([]);
   const [detailAttemptsLoading, setDetailAttemptsLoading] = useState(false);
+  const [detailFilters, setDetailFilters] = useState({
+    batchId: "all",
+    result: "all",
+    answerResult: "all",
+    search: "",
+  });
   const [localRecoveryDraft, setLocalRecoveryDraft] = useState(null);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassigning, setReassigning] = useState(false);
@@ -168,6 +175,112 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const selectedBatchIds = Form.useWatch("batchIds", { form, preserve: true }) || [];
   const selectedQuestionLayout =
     Form.useWatch(["settings", "layout"], { form, preserve: true }) || "all_questions";
+  const submittedDetailAttempts = useMemo(
+    () => detailAttempts.filter((attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+    [detailAttempts],
+  );
+  const rankedDetailAttempts = useMemo(
+    () =>
+      [...submittedDetailAttempts].sort((left, right) => {
+        const scoreDifference = Number(right.score || 0) - Number(left.score || 0);
+        if (scoreDifference) return scoreDifference;
+        const percentageDifference = Number(right.percentage || 0) - Number(left.percentage || 0);
+        if (percentageDifference) return percentageDifference;
+        return new Date(left.submittedAt || 0) - new Date(right.submittedAt || 0);
+      }),
+    [submittedDetailAttempts],
+  );
+  const positionByAttemptId = useMemo(
+    () => new Map(rankedDetailAttempts.slice(0, 3).map((attempt, index) => [String(attempt._id), index + 1])),
+    [rankedDetailAttempts],
+  );
+  const detailPerformanceSummary = useMemo(() => {
+    const answerTotals = submittedDetailAttempts.reduce(
+      (totals, attempt) => {
+        (attempt.answers || []).forEach((answer) => {
+          const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
+          if (!answered) {
+            totals.unanswered += 1;
+          } else if (answer.isCorrect === true) {
+            totals.right += 1;
+          } else if (answer.autoGraded !== false) {
+            totals.wrong += 1;
+          } else {
+            totals.needsReview += 1;
+          }
+        });
+        return totals;
+      },
+      { right: 0, wrong: 0, unanswered: 0, needsReview: 0 },
+    );
+    const passed = submittedDetailAttempts.filter((attempt) => attempt.passed).length;
+    const failed = submittedDetailAttempts.length - passed;
+    const scoreTotal = submittedDetailAttempts.reduce((total, attempt) => total + Number(attempt.score || 0), 0);
+    const percentageTotal = submittedDetailAttempts.reduce((total, attempt) => total + Number(attempt.percentage || 0), 0);
+
+    return {
+      submitted: submittedDetailAttempts.length,
+      passed,
+      failed,
+      remaining: Math.max(0, Number(detailTest?.studentCount || 0) - submittedDetailAttempts.length),
+      inProgress: detailAttempts.filter((attempt) => attempt.status === "in_progress").length,
+      notStarted: detailAttempts.filter((attempt) => attempt.status === "not_started").length,
+      averageScore: submittedDetailAttempts.length ? Math.round((scoreTotal / submittedDetailAttempts.length) * 100) / 100 : 0,
+      averagePercentage: submittedDetailAttempts.length
+        ? Math.round((percentageTotal / submittedDetailAttempts.length) * 100) / 100
+        : 0,
+      ...answerTotals,
+    };
+  }, [detailAttempts, detailTest?.studentCount, submittedDetailAttempts]);
+  const visibleDetailAttempts = useMemo(() => {
+    const keyword = detailFilters.search.trim().toLowerCase();
+    const orderedAttempts = [
+      ...rankedDetailAttempts.slice(0, 3),
+      ...rankedDetailAttempts.slice(3),
+      ...detailAttempts.filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+    ];
+
+    return orderedAttempts.filter((attempt) => {
+      const batchId = String(attempt.batch?._id || attempt.batch || "");
+      const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
+      const matchesResult =
+        detailFilters.result === "all" ||
+        (detailFilters.result === "remaining" && !isSubmitted) ||
+        (detailFilters.result === "passed" && isSubmitted && attempt.passed) ||
+        (detailFilters.result === "failed" && isSubmitted && !attempt.passed);
+      const answerCounts = (attempt.answers || []).reduce(
+        (counts, answer) => {
+          const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
+          if (!answered) return counts;
+          if (answer.isCorrect === true) counts.right += 1;
+          else if (answer.autoGraded !== false) counts.wrong += 1;
+          else counts.needsReview += 1;
+          return counts;
+        },
+        { right: 0, wrong: 0, needsReview: 0 },
+      );
+      const matchesAnswerResult =
+        detailFilters.answerResult === "all" ||
+        (detailFilters.answerResult === "has_wrong" && answerCounts.wrong > 0) ||
+        (detailFilters.answerResult === "all_right" && isSubmitted && answerCounts.right > 0 && !answerCounts.wrong && !answerCounts.needsReview) ||
+        (detailFilters.answerResult === "needs_review" && answerCounts.needsReview > 0);
+      const searchValue = [
+        attempt.student?.studentName,
+        attempt.student?.registrationNo,
+        attempt.batch?.batchName,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return (
+        (detailFilters.batchId === "all" || batchId === detailFilters.batchId) &&
+        matchesResult &&
+        matchesAnswerResult &&
+        (!keyword || searchValue.includes(keyword))
+      );
+    });
+  }, [detailAttempts, detailFilters, rankedDetailAttempts]);
 
   const testStudioBasePath = employeeMode
     ? "/employee-dashboard/test-studio"
@@ -210,6 +323,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   useEffect(() => {
     if (!detailMode || !routeTestId) return;
 
+    setDetailFilters({ batchId: "all", result: "all", answerResult: "all", search: "" });
     const loadDetailTest = async () => {
       setLoading(true);
       try {
@@ -705,6 +819,20 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     setReassignOpen(true);
   };
 
+  const handlePublishResults = async () => {
+    if (!detailTest?._id) return;
+    try {
+      const response = await publishTestResults(detailTest._id);
+      setDetailTest((current) =>
+        current ? { ...current, resultsPublished: true } : current,
+      );
+      message.success(response.message || "Test results published to students.");
+      await Promise.all([loadData(), loadDetailAttempts(detailTest._id)]);
+    } catch (error) {
+      message.error(error.message || "Failed to publish test results");
+    }
+  };
+
   const handleReassignRemaining = async () => {
     const targetTest = reassignTest || detailTest;
     if (!targetTest?._id) return;
@@ -1192,6 +1320,110 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     }
   };
 
+  const downloadTestResultsPdf = (test, attempts) => {
+    try {
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const submitted = (attempts || [])
+        .filter((attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status))
+        .sort((left, right) => Number(right.score || 0) - Number(left.score || 0));
+      const rankById = new Map(submitted.slice(0, 3).map((attempt, index) => [String(attempt._id), index + 1]));
+      const questionMap = new Map((test.questions || []).map((question) => [String(question._id), question]));
+      const totals = submitted.reduce(
+        (result, attempt) => {
+          result.passed += attempt.passed ? 1 : 0;
+          (attempt.answers || []).forEach((answer) => {
+            const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
+            if (!answered) result.unanswered += 1;
+            else if (answer.isCorrect === true) result.right += 1;
+            else if (answer.autoGraded !== false) result.wrong += 1;
+            else result.needsReview += 1;
+          });
+          return result;
+        },
+        { passed: 0, right: 0, wrong: 0, unanswered: 0, needsReview: 0 },
+      );
+      let y = 16;
+
+      const ensureSpace = (height = 12) => {
+        if (y + height <= pageHeight - 14) return;
+        doc.addPage();
+        y = 16;
+      };
+      const writeLine = (text, { bold = false, size = 10, indent = 14 } = {}) => {
+        doc.setFont("helvetica", bold ? "bold" : "normal");
+        doc.setFontSize(size);
+        const lines = doc.splitTextToSize(String(text || "-"), 182 - (indent - 14));
+        ensureSpace(lines.length * 5 + 2);
+        doc.text(lines, indent, y);
+        y += lines.length * 5 + 2;
+      };
+
+      writeLine(test.title || "Test Results", { bold: true, size: 16 });
+      writeLine(`Course: ${test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`);
+      writeLine(`Assigned batches: ${(test.assignedBatches || []).map((item) => item.batch?.batchName || item.batchName || "Batch").join(", ") || "N/A"}`);
+      writeLine(`Report generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}`);
+      y += 2;
+      writeLine(
+        `Students: ${attempts.length}  |  Submitted: ${submitted.length}  |  Passed: ${totals.passed}  |  Failed: ${submitted.length - totals.passed}  |  Remaining: ${Math.max(0, Number(test.studentCount || 0) - submitted.length)}`,
+        { bold: true },
+      );
+      writeLine(`Right answers: ${totals.right}  |  Wrong answers: ${totals.wrong}  |  Unanswered: ${totals.unanswered}  |  Needs review: ${totals.needsReview}`);
+      writeLine(`Test marks: ${test.totalMarks || 0}  |  Passing marks: ${test.passingMarks || 0}`);
+      y += 3;
+
+      const sortedAttempts = [
+        ...submitted,
+        ...(attempts || []).filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+      ];
+      sortedAttempts.forEach((attempt) => {
+        y += 2;
+        writeLine(
+          `${rankById.has(String(attempt._id)) ? `Position ${rankById.get(String(attempt._id))}: ` : ""}${attempt.student?.studentName || "Student"} (${attempt.student?.registrationNo || "No registration"})`,
+          { bold: true, size: 12 },
+        );
+        const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
+        writeLine(`Batch: ${attempt.batch?.batchName || "N/A"}  |  Status: ${attempt.status}  |  Score: ${attempt.score || 0}/${test.totalMarks || 0} (${attempt.percentage || 0}%)  |  Result: ${isSubmitted ? (attempt.passed ? "Passed" : "Not passed") : "Pending"}`);
+        if (attempt.submittedAt) writeLine(`Submitted: ${dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A")}`);
+
+        if (!attempt.answers?.length) {
+          writeLine("No submitted answers.");
+          return;
+        }
+
+        attempt.answers.forEach((answer, index) => {
+          const question = questionMap.get(String(answer.questionId));
+          const options = question?.options || [];
+          const optionText = (optionId) => {
+            const option = options.find((item, optionIndex) => String(item._id || optionIndex) === String(optionId));
+            return option?.text || optionId;
+          };
+          const selected = (answer.selectedOptions || []).map(optionText);
+          const correct = (question?.correctAnswers || []).map(optionText);
+          const answered = selected.length > 0 || Boolean(String(answer.textAnswer || "").trim());
+          const answerStatus = answer.isCorrect === true
+            ? "Right"
+            : !answered
+              ? "Unanswered"
+              : answer.autoGraded === false
+                ? "Needs review"
+                : "Wrong";
+
+          writeLine(`Q${index + 1}. ${question?.questionText || "Question"} [${answerStatus}; ${answer.marksAwarded || 0}/${question?.marks || 0} marks]`, { bold: true });
+          writeLine(`Student answer: ${selected.length ? selected.join(", ") : answer.textAnswer || "No answer"}`, { indent: 18, size: 9 });
+          writeLine(`Correct answer: ${correct.length ? correct.join(", ") : question?.modelAnswer || "N/A"}`, { indent: 18, size: 9 });
+        });
+      });
+
+      const safeTitle = String(test.title || "test-results").replace(/[<>:"/\\|?*]+/g, "-").trim();
+      doc.save(`${safeTitle || "test-results"}-results.pdf`);
+      message.success("Test results PDF downloaded");
+    } catch (error) {
+      console.error("Test results PDF failed:", error);
+      message.error("Failed to download test results PDF");
+    }
+  };
+
   const stepItems = [
     { title: "Basic" },
     { title: "Format" },
@@ -1587,6 +1819,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         <Select options={[{ label: "Immediately", value: "immediate" }, { label: "After Teacher Publishes", value: "after_publish" }, { label: "Never", value: "never" }]} />
       </Form.Item>
       <Form.Item name={["settings", "attemptsAllowed"]} label="Attempts Allowed"><InputNumber min={1} className="w-full" /></Form.Item>
+      <Form.Item name={["settings", "allowReview"]} label="Allow Answer Review" valuePropName="checked"><Switch /></Form.Item>
       <Form.Item name={["settings", "layout"]} label="Question Layout">
         <Select options={[{ label: "All questions on one page", value: "all_questions" }, { label: "One question at a time", value: "one_by_one" }]} />
       </Form.Item>
@@ -1708,6 +1941,14 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           const optionMap = new Map((question?.options || []).map((option, optionIndex) => [String(option._id || optionIndex), option.text]));
           const selected = (answer.selectedOptions || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
           const correct = (question?.correctAnswers || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
+          const answered = selected.length > 0 || Boolean(String(answer.textAnswer || "").trim());
+          const answerStatus = answer.isCorrect === true
+            ? "Right"
+            : !answered
+              ? "Unanswered"
+              : answer.autoGraded === false
+                ? "Needs Review"
+                : "Wrong";
 
           return (
             <div key={`${answer.questionId}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1715,8 +1956,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 <div className="font-semibold text-primary">
                   Q{index + 1}. {question?.questionText || "Question"}
                 </div>
-                <Tag color={answer.isCorrect ? "green" : "red"}>
-                  {answer.isCorrect ? "Right" : "Wrong"}
+                <Tag color={answerStatus === "Right" ? "green" : answerStatus === "Wrong" ? "red" : "orange"}>
+                  {answerStatus}
                 </Tag>
               </div>
               <div className="mt-2 grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
@@ -1743,6 +1984,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     );
   };
 
+  const getAttemptAnswerCounts = (attempt) =>
+    (attempt.answers || []).reduce(
+      (counts, answer) => {
+        const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
+        if (!answered) return counts;
+        if (answer.isCorrect === true) counts.right += 1;
+        else if (answer.autoGraded !== false) counts.wrong += 1;
+        else counts.needsReview += 1;
+        return counts;
+      },
+      { right: 0, wrong: 0, needsReview: 0 },
+    );
+
   const renderTestDetailsContent = () => {
     if (!detailTest) {
       return <Card loading={loading} className="rounded-2xl" />;
@@ -1753,7 +2007,9 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="module-title">Test Details</h2>
-            <p className="module-subtitle">Review completion, submitted answers, and reassign remaining students</p>
+            <p className="module-subtitle">
+              Review {detailTest.course?.courseName || "course"} results, answer details, and batch performance
+            </p>
           </div>
           <Button onClick={() => navigate(testStudioBasePath)}>Back to Test Studio</Button>
         </div>
@@ -1762,16 +2018,48 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
             <div>
               <h3 className="m-0 text-lg font-ArialBold text-primary">{detailTest.title}</h3>
               <p className="m-0 mt-1 text-sm text-slate-500">{detailTest.description || "No description"}</p>
+              <p className="m-0 mt-1 text-xs text-slate-500">
+                Course: {detailTest.course?.courseName || "N/A"} · Topic: {detailTest.topic || "N/A"}
+              </p>
             </div>
             <Tag color={statusColors[detailTest.status]}>{detailTest.status}</Tag>
           </div>
         </Card>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <Card><Statistic title="Students" value={detailTest.studentCount || 0} /></Card>
-          <Card><Statistic title="Not Started" value={detailTest.attemptCounts?.not_started || 0} /></Card>
-          <Card><Statistic title="In Progress" value={detailTest.attemptCounts?.in_progress || 0} /></Card>
-          <Card><Statistic title="Submitted" value={(detailTest.attemptCounts?.submitted || 0) + (detailTest.attemptCounts?.auto_submitted || 0)} /></Card>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Card><Statistic title="Assigned Students" value={detailTest.studentCount || 0} /></Card>
+          <Card><Statistic title="Submitted" value={detailPerformanceSummary.submitted} /></Card>
+          <Card><Statistic title="Passed" value={detailPerformanceSummary.passed} valueStyle={{ color: "#16a34a" }} /></Card>
+          <Card><Statistic title="Failed" value={detailPerformanceSummary.failed} valueStyle={{ color: "#dc2626" }} /></Card>
+          <Card><Statistic title="Remaining" value={detailPerformanceSummary.remaining} /></Card>
+          <Card><Statistic title="In Progress" value={detailPerformanceSummary.inProgress} /></Card>
+          <Card><Statistic title="Not Started" value={detailPerformanceSummary.notStarted} /></Card>
+          <Card><Statistic title="Average Score" value={detailPerformanceSummary.averageScore} suffix={`/ ${detailTest.totalMarks || 0}`} /></Card>
+          <Card><Statistic title="Average Percentage" value={detailPerformanceSummary.averagePercentage} suffix="%" /></Card>
+          <Card><Statistic title="Right Answers" value={detailPerformanceSummary.right} valueStyle={{ color: "#16a34a" }} /></Card>
+          <Card><Statistic title="Wrong Answers" value={detailPerformanceSummary.wrong} valueStyle={{ color: "#dc2626" }} /></Card>
+          <Card><Statistic title="Unanswered" value={detailPerformanceSummary.unanswered} /></Card>
+          <Card><Statistic title="Needs Review" value={detailPerformanceSummary.needsReview} /></Card>
         </div>
+        <Card title="Position Holders">
+          {rankedDetailAttempts.length ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              {rankedDetailAttempts.slice(0, 3).map((attempt, index) => (
+                <div key={attempt._id} className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <div className="text-xs font-bold uppercase tracking-wide text-amber-800">
+                    {index === 0 ? "1st Place" : index === 1 ? "2nd Place" : "3rd Place"}
+                  </div>
+                  <div className="mt-1 font-semibold text-primary">{attempt.student?.studentName || "Student"}</div>
+                  <div className="text-sm text-slate-600">
+                    {attempt.score || 0} / {detailTest.totalMarks || 0} ({attempt.percentage || 0}%)
+                  </div>
+                  <div className="text-xs text-slate-500">{attempt.batch?.batchName || "N/A"}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty description="Position holders appear after students submit the test" />
+          )}
+        </Card>
         <Card title="Assigned Batches">
           <div className="flex flex-wrap gap-2">
             {(detailTest.assignedBatches || []).map((item) => <Tag key={item.batch?._id || item.batch}>{item.batch?.batchName || item.batch}</Tag>)}
@@ -1781,23 +2069,98 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           title="Student Test Completion"
           extra={
             canPublishTest ? (
-              <Button size="small" onClick={() => openReassignRemaining(detailTest)}>
-                Reassign Remaining
+              <Space>
+                {detailTest.settings?.resultVisibility === "after_publish" &&
+                !detailTest.resultsPublished &&
+                detailTest.schedule?.endAt &&
+                !dayjs(detailTest.schedule.endAt).isAfter(dayjs()) ? (
+                  <Button size="small" type="primary" onClick={handlePublishResults}>
+                    Publish Results
+                  </Button>
+                ) : null}
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={() => downloadTestResultsPdf(detailTest, detailAttempts)}
+                >
+                  Download Results PDF
+                </Button>
+                <Button size="small" onClick={() => openReassignRemaining(detailTest)}>
+                  Reassign Remaining
+                </Button>
+              </Space>
+            ) : (
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() => downloadTestResultsPdf(detailTest, detailAttempts)}
+              >
+                Download Results PDF
               </Button>
-            ) : null
+            )
           }
         >
+          <div className="mb-4 flex flex-col gap-2 md:flex-row">
+            <Input.Search
+              allowClear
+              placeholder="Search student or registration"
+              value={detailFilters.search}
+              onChange={(event) => setDetailFilters((current) => ({ ...current, search: event.target.value }))}
+              className="md:max-w-xs"
+            />
+            <Select
+              value={detailFilters.batchId}
+              onChange={(batchId) => setDetailFilters((current) => ({ ...current, batchId }))}
+              className="md:min-w-52"
+              options={[
+                { label: "All assigned batches", value: "all" },
+                ...(detailTest.assignedBatches || []).map((item) => ({
+                  label: item.batch?.batchName || item.batchName || "Batch",
+                  value: String(item.batch?._id || item.batch),
+                })),
+              ]}
+            />
+            <Select
+              value={detailFilters.result}
+              onChange={(result) => setDetailFilters((current) => ({ ...current, result }))}
+              className="md:min-w-40"
+              options={[
+                { label: "All results", value: "all" },
+                { label: "Passed", value: "passed" },
+                { label: "Failed", value: "failed" },
+                { label: "Not submitted", value: "remaining" },
+              ]}
+            />
+            <Select
+              value={detailFilters.answerResult}
+              onChange={(answerResult) => setDetailFilters((current) => ({ ...current, answerResult }))}
+              className="md:min-w-48"
+              options={[
+                { label: "All answer results", value: "all" },
+                { label: "Has wrong answers", value: "has_wrong" },
+                { label: "All attempted answers right", value: "all_right" },
+                { label: "Needs manual review", value: "needs_review" },
+              ]}
+            />
+          </div>
           <Table
             rowKey="_id"
             loading={detailAttemptsLoading}
-            dataSource={detailAttempts}
-            pagination={{ pageSize: 10 }}
-            scroll={{ x: "max-content" }}
+            dataSource={visibleDetailAttempts}
+            pagination={{ pageSize: 20, showSizeChanger: true }}
+            scroll={{ x: "max-content", y: 560 }}
             expandable={{
               expandedRowRender: renderAttemptAnswers,
               rowExpandable: (attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status),
             }}
             columns={[
+              {
+                title: "Position",
+                render: (_, attempt) => {
+                  const position = positionByAttemptId.get(String(attempt._id));
+                  return position ? <Tag color={position === 1 ? "gold" : position === 2 ? "default" : "orange"}>{position === 1 ? "1st" : position === 2 ? "2nd" : "3rd"}</Tag> : "—";
+                },
+              },
               {
                 title: "Student",
                 render: (_, attempt) => (
@@ -1808,6 +2171,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 ),
               },
               { title: "Batch", render: (_, attempt) => attempt.batch?.batchName || "N/A" },
+              {
+                title: "Right / Wrong",
+                render: (_, attempt) => {
+                  const counts = getAttemptAnswerCounts(attempt);
+                  return (
+                    <Space size={4}>
+                      <Tag color="green">{counts.right} right</Tag>
+                      <Tag color="red">{counts.wrong} wrong</Tag>
+                      {counts.needsReview ? <Tag color="orange">{counts.needsReview} review</Tag> : null}
+                    </Space>
+                  );
+                },
+              },
               {
                 title: "Status",
                 dataIndex: "status",
