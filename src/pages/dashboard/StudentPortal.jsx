@@ -58,6 +58,7 @@ const StudentPortal = () => {
   const [studentTests, setStudentTests] = useState([]);
   const [testsLoading, setTestsLoading] = useState(false);
   const [activePaper, setActivePaper] = useState(null);
+  const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [submittingTest, setSubmittingTest] = useState(false);
   const [nowTick, setNowTick] = useState(dayjs());
@@ -172,6 +173,7 @@ const StudentPortal = () => {
       const response = await startMyStudentTest(testId);
       setActivePaper(response.data?.test || null);
       setAnswers({});
+      setActiveQuestionIndex(0);
     } catch (error) {
       message.error(error.message || "Failed to start test");
     }
@@ -196,6 +198,7 @@ const StudentPortal = () => {
       message.success(auto ? "Time ended. Test auto-submitted." : "Test submitted successfully");
       setActivePaper(null);
       setAnswers({});
+      setActiveQuestionIndex(0);
       await loadStudentTests();
       Modal.success({
         title: "Result",
@@ -441,41 +444,94 @@ const StudentPortal = () => {
     );
   };
 
-  const renderTestPaper = () => (
-    <div className="space-y-4">
-      <Card className="rounded-[16px]">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <h2 className="module-title !text-[20px]">{activePaper.title}</h2>
-            <p className="module-subtitle">{activePaper.instructions || "Answer all questions carefully."}</p>
+  const renderTestPaper = () => {
+    const paperQuestions = activePaper.questions || [];
+    const oneByOne = activePaper.settings?.layout === "one_by_one";
+    const visibleQuestions = oneByOne
+      ? paperQuestions.slice(activeQuestionIndex, activeQuestionIndex + 1)
+      : paperQuestions;
+    const isLastQuestion = activeQuestionIndex === paperQuestions.length - 1;
+
+    return (
+      <div className="space-y-4">
+        <Card className="rounded-[16px]">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="module-title !text-[20px]">{activePaper.title}</h2>
+              <p className="module-subtitle">{activePaper.instructions || "Answer all questions carefully."}</p>
+            </div>
+            <Tag color="red" className="!px-3 !py-1 !text-[13px]">
+              Time Left: {formatDuration(getRemainingMs(activePaper.schedule?.endAt))}
+            </Tag>
           </div>
-          <Tag color="red" className="!px-3 !py-1 !text-[13px]">
-            Time Left: {formatDuration(getRemainingMs(activePaper.schedule?.endAt))}
-          </Tag>
-        </div>
-      </Card>
-
-      {(activePaper.questions || []).map((question, index) => (
-        <Card key={question._id} className="rounded-[16px]" title={`Question ${index + 1} (${question.marks || 0} marks)`}>
-          <div className="mb-4 text-[15px] font-semibold text-primary">{question.questionText}</div>
-          {question.imageUrl ? <img src={question.imageUrl} alt="Question" className="mb-4 max-h-[240px] rounded-lg object-contain" /> : null}
-          {renderQuestionInput(question)}
         </Card>
-      ))}
 
-      <div className="flex justify-end">
-        <Button
-          type="primary"
-          icon={<SendOutlined />}
-          loading={submittingTest}
-          onClick={() => submitTest(false)}
-          className="h-10 !bg-primary !border-primary"
-        >
-          Submit Test
-        </Button>
+        {visibleQuestions.map((question, visibleIndex) => {
+          const index = oneByOne ? activeQuestionIndex : visibleIndex;
+          return (
+            <Card
+              key={question._id}
+              className="rounded-[16px]"
+              title={`Question ${index + 1} (${question.marks || 0} marks)`}
+            >
+              <div className="mb-4 text-[15px] font-semibold text-primary">{question.questionText}</div>
+              {question.imageUrl ? (
+                <img
+                  src={question.imageUrl}
+                  alt="Question"
+                  className="mb-4 max-h-[240px] rounded-lg object-contain"
+                />
+              ) : null}
+              {renderQuestionInput(question)}
+            </Card>
+          );
+        })}
+
+        {oneByOne && paperQuestions.length > 0 ? (
+          <div className="flex items-center justify-between">
+            <Button
+              disabled={activeQuestionIndex === 0 || activePaper.settings?.allowBackNavigation === false}
+              onClick={() => setActiveQuestionIndex((index) => Math.max(0, index - 1))}
+            >
+              Previous
+            </Button>
+            <span className="text-sm text-slate-500">
+              Question {activeQuestionIndex + 1} of {paperQuestions.length}
+            </span>
+            {isLastQuestion ? (
+              <span />
+            ) : (
+              <Button
+                type="primary"
+                onClick={() =>
+                  setActiveQuestionIndex((index) =>
+                    Math.min(paperQuestions.length - 1, index + 1),
+                  )
+                }
+                className="!bg-primary !border-primary"
+              >
+                Next
+              </Button>
+            )}
+          </div>
+        ) : null}
+
+        {(!oneByOne || isLastQuestion) ? (
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              loading={submittingTest}
+              onClick={() => submitTest(false)}
+              className="h-10 !bg-primary !border-primary"
+            >
+              Submit Test
+            </Button>
+          </div>
+        ) : null}
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderStudentTests = () => {
     if (activePaper) return renderTestPaper();

@@ -141,6 +141,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [editingTest, setEditingTest] = useState(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [questions, setQuestions] = useState([emptyQuestion()]);
+  const [teacherQuestionIndex, setTeacherQuestionIndex] = useState(0);
+  const [paperPreviewOpen, setPaperPreviewOpen] = useState(false);
   const [sections, setSections] = useState([]);
   const [assignmentPreview, setAssignmentPreview] = useState(null);
   const [filters, setFilters] = useState({ status: "all", search: "" });
@@ -153,6 +155,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [reassignTest, setReassignTest] = useState(null);
   const [teacherPaperHeader, setTeacherPaperHeader] = useState(defaultPaperHeader);
   const [nowTick, setNowTick] = useState(dayjs());
+  const [courseDetailsOpen, setCourseDetailsOpen] = useState(false);
   const [form] = Form.useForm();
   const [reassignForm] = Form.useForm();
   const autoSaveTestIdRef = useRef(null);
@@ -161,8 +164,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const draftVersionRef = useRef(0);
   const autoSaveErrorShownRef = useRef(false);
   const localStorageErrorShownRef = useRef(false);
-  const selectedCourse = Form.useWatch("course", form);
-  const selectedBatchIds = Form.useWatch("batchIds", form) || [];
+  const selectedCourse = Form.useWatch("course", { form, preserve: true });
+  const selectedBatchIds = Form.useWatch("batchIds", { form, preserve: true }) || [];
+  const selectedQuestionLayout =
+    Form.useWatch(["settings", "layout"], { form, preserve: true }) || "all_questions";
 
   const testStudioBasePath = employeeMode
     ? "/employee-dashboard/test-studio"
@@ -296,7 +301,29 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         : allAssignedBatches,
     [allAssignedBatches, selectedCourse],
   );
-  const selectedCourseRecord = options.find((course) => course._id === selectedCourse);
+  const selectedCourseId =
+    selectedCourse && typeof selectedCourse === "object"
+      ? selectedCourse._id
+      : selectedCourse;
+  const selectedCourseIds = [
+    ...new Set(
+      [
+        selectedCourseId,
+        ...allAssignedBatches
+          .filter((batch) =>
+            selectedBatchIds.some((id) => String(id?._id || id) === String(batch._id)),
+          )
+          .map((batch) => batch.courseId || batch.course),
+      ]
+        .map((id) => String(id || ""))
+        .filter(Boolean),
+    ),
+  ];
+  const selectedCourseRecords = selectedCourseIds.map(
+    (courseId) =>
+      options.find((course) => String(course._id) === courseId) ||
+      allAssignedBatches.find((batch) => String(batch.courseId || batch.course) === courseId),
+  );
 
   const createScheduleWindow = (dayOffset = 0) => {
     const durationMinutes = Number(form.getFieldValue(["schedule", "durationMinutes"]) || 60);
@@ -351,6 +378,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     setEditingTest(null);
     setCurrentStep(0);
     setQuestions([emptyQuestion()]);
+    setTeacherQuestionIndex(0);
+    setPaperPreviewOpen(false);
     setSections([]);
     setAssignmentPreview(null);
     form.resetFields();
@@ -398,6 +427,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     setEditingTest(test);
     setCurrentStep(Math.max(0, Math.min(6, Number(test.wizardStep || 0))));
     setQuestions((test.questions || []).map((question, index) => ({ ...question, order: index })));
+    setTeacherQuestionIndex(0);
+    setPaperPreviewOpen(false);
     setSections(test.sections || []);
     setAssignmentPreview(null);
     form.resetFields();
@@ -474,6 +505,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         ? localRecoveryDraft.questions
         : [emptyQuestion()],
     );
+    setTeacherQuestionIndex(0);
+    setPaperPreviewOpen(false);
     setSections(Array.isArray(localRecoveryDraft.sections) ? localRecoveryDraft.sections : []);
     setCurrentStep(Number.isInteger(localRecoveryDraft.currentStep) ? localRecoveryDraft.currentStep : 0);
     setAssignmentPreview(null);
@@ -754,6 +787,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   };
 
   const addQuestion = (type = form.getFieldValue("allowedQuestionTypes")?.[0] || "mcq_single") => {
+    setTeacherQuestionIndex(questions.length);
     setQuestions((prev) => [...prev, emptyQuestion(prev.length, type)]);
   };
 
@@ -772,9 +806,18 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   };
 
   const duplicateQuestion = (index) => {
+    setTeacherQuestionIndex(index + 1);
     setQuestions((prev) => {
       const clone = { ...prev[index], questionText: `${prev[index].questionText} Copy` };
       return [...prev.slice(0, index + 1), clone, ...prev.slice(index + 1)];
+    });
+  };
+
+  const removeQuestion = (index) => {
+    setQuestions((prev) => {
+      const nextQuestions = prev.filter((_, itemIndex) => itemIndex !== index);
+      setTeacherQuestionIndex(Math.min(index, Math.max(0, nextQuestions.length - 1)));
+      return nextQuestions;
     });
   };
 
@@ -883,6 +926,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
       const updatedQuestions = [...questions, ...parsedQuestions];
       setQuestions(updatedQuestions);
+      setTeacherQuestionIndex(updatedQuestions.length - 1);
       form.setFieldValue(
         "totalMarks",
         updatedQuestions.reduce(
@@ -1102,6 +1146,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
       for (let index = 0; index < (test.questions || []).length; index += 1) {
         const question = (test.questions || [])[index];
+        if (test.settings?.layout === "one_by_one" && index > 0) {
+          doc.addPage();
+          y = await drawTestPaperHeader(doc, test);
+        }
         await addPageIfNeeded(30);
         y += 4;
         doc.setFont("helvetica", "bold");
@@ -1235,7 +1283,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
             <Button size="small" onClick={() => moveQuestion(index, -1)}>Up</Button>
             <Button size="small" onClick={() => moveQuestion(index, 1)}>Down</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => duplicateQuestion(index)} />
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setQuestions((prev) => prev.filter((_, itemIndex) => itemIndex !== index))} />
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeQuestion(index)} />
           </Space>
         }
         className="rounded-2xl"
@@ -1292,6 +1340,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
         <Button icon={<PlusOutlined />} onClick={() => addQuestion()}>Add Question</Button>
+        <Button onClick={() => setPaperPreviewOpen(true)}>Preview Question Paper</Button>
         <Button icon={<FileExcelOutlined />} onClick={importTemplate}>Download Import Template</Button>
         <Upload
           accept=".xlsx,.xls,.csv"
@@ -1308,18 +1357,23 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               <Button
                 key={item._id}
                 size="small"
-                onClick={() => setQuestions((prev) => [...prev, {
-                  bankQuestion: item._id,
-                  questionType: item.questionType,
-                  difficulty: item.difficulty,
-                  questionText: item.questionText,
-                  options: item.options,
-                  correctAnswers: item.correctAnswers,
-                  modelAnswer: item.modelAnswer,
-                  explanation: item.explanation,
-                  marks: item.defaultMarks || 1,
-                  tags: item.tags || [],
-                }])}
+                onClick={() => {
+                  setTeacherQuestionIndex(questions.length);
+                  setQuestions((prev) => [
+                    ...prev, {
+                      bankQuestion: item._id,
+                      questionType: item.questionType,
+                      difficulty: item.difficulty,
+                      questionText: item.questionText,
+                      options: item.options,
+                      correctAnswers: item.correctAnswers,
+                      modelAnswer: item.modelAnswer,
+                      explanation: item.explanation,
+                      marks: item.defaultMarks || 1,
+                      tags: item.tags || [],
+                    },
+                  ]);
+                }}
               >
                 Reuse: {item.questionText.slice(0, 40)}
               </Button>
@@ -1328,8 +1382,95 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         </Card>
       ) : null}
       <div className="space-y-4">
-        {questions.map((question, index) => renderQuestionEditor(question, index))}
+        {selectedQuestionLayout === "one_by_one" ? (
+          <>
+            {questions[teacherQuestionIndex]
+              ? renderQuestionEditor(questions[teacherQuestionIndex], teacherQuestionIndex)
+              : <Empty description="Add a question to begin" />}
+            {questions.length > 0 ? (
+              <div className="flex items-center justify-between">
+                <Button
+                  disabled={teacherQuestionIndex === 0}
+                  onClick={() => setTeacherQuestionIndex((index) => Math.max(0, index - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-slate-500">
+                  Question {teacherQuestionIndex + 1} of {questions.length}
+                </span>
+                <Button
+                  disabled={teacherQuestionIndex >= questions.length - 1}
+                  onClick={() =>
+                    setTeacherQuestionIndex((index) => Math.min(questions.length - 1, index + 1))
+                  }
+                >
+                  Next
+                </Button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          questions.map((question, index) => renderQuestionEditor(question, index))
+        )}
       </div>
+      <Modal
+        title={`Question Paper Preview - ${selectedQuestionLayout === "one_by_one" ? "One question at a time" : "All questions"}`}
+        open={paperPreviewOpen}
+        onCancel={() => setPaperPreviewOpen(false)}
+        footer={null}
+        width={800}
+      >
+        <div className="space-y-4">
+          {(selectedQuestionLayout === "one_by_one"
+            ? questions.slice(teacherQuestionIndex, teacherQuestionIndex + 1)
+            : questions
+          ).map((question, visibleIndex) => {
+            const index = selectedQuestionLayout === "one_by_one"
+              ? teacherQuestionIndex
+              : visibleIndex;
+            return (
+              <Card
+                key={`${question.order ?? index}-${index}`}
+                title={`Question ${index + 1} (${question.marks || 0} marks)`}
+              >
+                <div className="mb-3 font-semibold text-primary">
+                  {question.questionText || "Question text will appear here"}
+                </div>
+                {["mcq_single", "mcq_multiple", "true_false"].includes(question.questionType) ? (
+                  <div className="space-y-2">
+                    {(question.options || []).map((option, optionIndex) => (
+                      <div key={option._id || optionIndex} className="rounded border border-slate-200 px-3 py-2">
+                        {String.fromCharCode(65 + optionIndex)}. {option.text || "Option"}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </Card>
+            );
+          })}
+          {selectedQuestionLayout === "one_by_one" && questions.length > 0 ? (
+            <div className="flex items-center justify-between">
+              <Button
+                disabled={teacherQuestionIndex === 0}
+                onClick={() => setTeacherQuestionIndex((index) => Math.max(0, index - 1))}
+              >
+                Previous
+              </Button>
+              <span className="text-sm text-slate-500">
+                Question {teacherQuestionIndex + 1} of {questions.length}
+              </span>
+              <Button
+                disabled={teacherQuestionIndex >= questions.length - 1}
+                onClick={() =>
+                  setTeacherQuestionIndex((index) => Math.min(questions.length - 1, index + 1))
+                }
+              >
+                Next
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 
@@ -1470,12 +1611,41 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       <div className="space-y-4">
         <Card title="Summary" className="rounded-2xl">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-            <Statistic title="Course" value={selectedCourseRecord?.courseName || "Not selected"} />
+            <div>
+              <div className="text-sm text-slate-500">Selected Courses</div>
+              <Button
+                type="link"
+                className="!h-auto !p-0 !text-2xl !text-slate-900"
+                disabled={!selectedCourseRecords.length}
+                onClick={() => setCourseDetailsOpen(true)}
+                aria-label={`Show ${selectedCourseRecords.length} selected courses`}
+              >
+                {selectedCourseRecords.length}
+              </Button>
+            </div>
             <Statistic title="Questions" value={nonEmptyQuestions.length} />
             <Statistic title="Question Marks" value={questionMarks} />
             <Statistic title="Assigned Batches" value={selectedBatchIds.length} />
           </div>
         </Card>
+        <Modal
+          title="Selected Courses"
+          open={courseDetailsOpen}
+          onCancel={() => setCourseDetailsOpen(false)}
+          footer={null}
+        >
+          <div className="space-y-2">
+            {selectedCourseRecords.map((course, index) => (
+              <div
+                key={selectedCourseIds[index]}
+                className="rounded-lg border border-slate-200 px-3 py-2"
+              >
+                {course?.courseName || "Course"}
+                {course?.courseId ? ` (${course.courseId})` : ""}
+              </div>
+            ))}
+          </div>
+        </Modal>
         <Card title="Validation" className="rounded-2xl">
           {issues.length ? (
             <div className="space-y-2">
