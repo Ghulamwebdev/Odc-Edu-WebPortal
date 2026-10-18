@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
       port: devPort,
       proxy: {
         // Proxy all API requests to backend server
-        "^/(auth|user|student|announcement|course|batch|teacher|employees|test-studio|enrollment|fee|health|accounting)(/|$)":
+        "^/(auth|user|student|announcement|course|batch|teacher|employees|test-studio|enrollment|fee|health|accounting|attendance|holiday|roles|settings)(/|$)":
           {
             target: backendUrl,
             changeOrigin: true,

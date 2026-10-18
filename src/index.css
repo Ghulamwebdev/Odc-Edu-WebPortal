@@ -219,7 +219,7 @@ h3 {
   .module-subtitle {
     @apply m-0 text-sm;
     color: #6b7280;
-    font-family: "Inter-sans", Arial, sans-serif !important;
+    font-family: "Inter-sans",  Arial, sans-serif !important;
   }
 
   .courses-module {

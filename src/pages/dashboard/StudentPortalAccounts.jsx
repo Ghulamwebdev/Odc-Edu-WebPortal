@@ -44,6 +44,10 @@ const StudentPortalAccounts = () => {
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [searchText, setSearchText] = useState("");
+  const watchedCourseIds = Form.useWatch("courseIds", { form, preserve: true });
+  const watchedBatchIds = Form.useWatch("batchIds", { form, preserve: true });
+  const selectedCourseIds = useMemo(() => watchedCourseIds || [], [watchedCourseIds]);
+  const selectedBatchIds = useMemo(() => watchedBatchIds || [], [watchedBatchIds]);
 
   const loadData = async () => {
     setLoading(true);
@@ -76,34 +80,54 @@ const StudentPortalAccounts = () => {
     [courses],
   );
 
+  const availableBatches = useMemo(
+    () =>
+      selectedCourseIds.length
+        ? batches.filter((batch) =>
+            selectedCourseIds.some(
+              (courseId) => String(batch.course?._id || batch.course) === String(courseId),
+            ),
+          )
+        : batches,
+    [batches, selectedCourseIds],
+  );
+
   const batchOptions = useMemo(
     () =>
-      batches.map((batch) => ({
+      availableBatches.map((batch) => ({
         label: `${batch.batchName} (${batch.batchCode})`,
         value: batch._id,
-        searchLabel: `${batch.batchName} ${batch.batchCode}`,
+        searchLabel: `${batch.batchName} ${batch.batchCode} ${batch.course?.courseName || ""}`,
       })),
-    [batches],
+    [availableBatches],
   );
 
   const filteredAccounts = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
-    if (!keyword) return accounts;
     return accounts.filter((account) =>
-      [
-        account.name,
-        account.email,
-        account.registrationNo,
-        account.phone,
-        ...(account.courses || []).map((course) => course.courseName),
-        ...(account.batches || []).map((batch) => batch.batchName),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(keyword),
+      (!selectedCourseIds.length ||
+        (account.courses || []).some((course) =>
+          selectedCourseIds.includes(String(course._id || course)),
+        )) &&
+      (!selectedBatchIds.length ||
+        (account.batches || []).some((batch) =>
+          selectedBatchIds.includes(String(batch._id || batch)),
+        )) &&
+      (!keyword ||
+        [
+          account.name,
+          account.email,
+          account.registrationNo,
+          account.phone,
+          ...(account.courses || []).map((course) => course.courseName),
+          ...(account.batches || []).map((batch) => batch.batchName),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(keyword)),
     );
-  }, [accounts, searchText]);
+  }, [accounts, searchText, selectedCourseIds, selectedBatchIds]);
 
   const handlePreview = async () => {
     const values = await form.validateFields();
@@ -120,11 +144,12 @@ const StudentPortalAccounts = () => {
 
   const selectAllBatches = () => {
     if (!batchOptions.length) {
-      message.info("No batches are available.");
+      message.info("No batches are available for the selected courses.");
       return;
     }
     const batchIds = batchOptions.map((batch) => batch.value);
     form.setFieldValue("batchIds", batchIds);
+    setPreview(null);
     message.success(`${batchIds.length} batch${batchIds.length === 1 ? "" : "es"} selected`);
   };
 
@@ -301,6 +326,26 @@ const StudentPortalAccounts = () => {
                 options={courseOptions}
                 maxTagCount={3}
                 maxTagPlaceholder={(omittedValues) => `+${omittedValues.length} more`}
+                onChange={(values) => {
+                  const courseIds = values || [];
+                  const selectedCourseSet = new Set(courseIds.map(String));
+                  const allowedBatchIds = new Set(
+                    batches
+                      .filter((batch) =>
+                        !courseIds.length ||
+                        selectedCourseSet.has(
+                          String(batch.course?._id || batch.course),
+                        ),
+                      )
+                      .map((batch) => String(batch._id)),
+                  );
+                  const currentBatchIds = form.getFieldValue("batchIds") || [];
+                  form.setFieldValue(
+                    "batchIds",
+                    currentBatchIds.filter((batchId) => allowedBatchIds.has(String(batchId))),
+                  );
+                  setPreview(null);
+                }}
               />
             </Form.Item>
             <Form.Item name="batchIds" label="Batches">
@@ -314,6 +359,7 @@ const StudentPortalAccounts = () => {
                 options={batchOptions}
                 maxTagCount={3}
                 maxTagPlaceholder={(omittedValues) => `+${omittedValues.length} more`}
+                onChange={() => setPreview(null)}
               />
             </Form.Item>
             <Form.Item label=" ">

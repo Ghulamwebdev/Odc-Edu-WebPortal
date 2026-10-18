@@ -102,11 +102,15 @@ const getSelectedEnrollmentStudents = async ({ courseIds = [], batchIds = [] }) 
   }));
 };
 
-const serializeStudentAccount = async (user) => {
+const serializeStudentAccount = async (user, activeEnrollmentData = null) => {
   const [student, courses, batches] = await Promise.all([
     user.student ? Admission.findById(user.student).lean() : null,
-    Course.find({ _id: { $in: user.studentPortal?.courseIds || [] } }, "courseName courseId").lean(),
-    Batch.find({ _id: { $in: user.studentPortal?.batchIds || [] } }, "batchName batchCode").lean(),
+    activeEnrollmentData
+      ? Promise.resolve(activeEnrollmentData.courses)
+      : Course.find({ _id: { $in: user.studentPortal?.courseIds || [] } }, "courseName courseId").lean(),
+    activeEnrollmentData
+      ? Promise.resolve(activeEnrollmentData.batches)
+      : Batch.find({ _id: { $in: user.studentPortal?.batchIds || [] } }, "batchName batchCode").lean(),
   ]);
 
   return {
@@ -640,7 +644,48 @@ const createStudentPortalAccounts = async (req, res) => {
 const listStudentPortalAccounts = async (req, res) => {
   try {
     const accounts = await UserAuth.find({ accountType: "student" }).sort({ createdAt: -1 });
-    const data = await Promise.all(accounts.map((account) => serializeStudentAccount(account)));
+    const accountStudentIds = accounts.map((account) => String(account.student || "")).filter(Boolean);
+    const activeEnrollments = await Enrollment.find({
+      student: { $in: accountStudentIds },
+      status: "Active",
+    })
+      .populate("student", "isActive")
+      .populate("course", "courseName courseId")
+      .populate("batch", "batchName batchCode")
+      .lean();
+    const activeEnrollmentDataByStudent = new Map();
+
+    activeEnrollments.forEach((enrollment) => {
+      const studentId = String(enrollment.student?._id || "");
+      if (!studentId || enrollment.student?.isActive === false || !enrollment.course) return;
+
+      if (!activeEnrollmentDataByStudent.has(studentId)) {
+        activeEnrollmentDataByStudent.set(studentId, { courses: [], batches: [] });
+      }
+
+      const studentData = activeEnrollmentDataByStudent.get(studentId);
+      if (!studentData.courses.some((course) => String(course._id) === String(enrollment.course._id))) {
+        studentData.courses.push(enrollment.course);
+      }
+      if (
+        enrollment.batch &&
+        !studentData.batches.some((batch) => String(batch._id) === String(enrollment.batch._id))
+      ) {
+        studentData.batches.push(enrollment.batch);
+      }
+    });
+
+    const eligibleAccounts = accounts.filter((account) =>
+      activeEnrollmentDataByStudent.has(String(account.student || "")),
+    );
+    const data = await Promise.all(
+      eligibleAccounts.map((account) =>
+        serializeStudentAccount(
+          account,
+          activeEnrollmentDataByStudent.get(String(account.student)),
+        ),
+      ),
+    );
     res.status(200).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: "Failed to fetch student portal accounts", error: error.message });

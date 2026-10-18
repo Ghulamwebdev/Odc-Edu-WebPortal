@@ -123,11 +123,59 @@ const sanitizeQuestionForStudent = (question = {}, index = 0) => ({
   })),
 });
 
-const serializeStudentTest = (test, attempt = null, now = new Date()) => {
+const shuffleWithSeed = (items, seed) => {
+  const shuffled = [...items];
+  let state = 2166136261;
+  for (const character of String(seed)) {
+    state ^= character.charCodeAt(0);
+    state = Math.imul(state, 16777619);
+  }
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const targetIndex = state % (index + 1);
+    [shuffled[index], shuffled[targetIndex]] = [shuffled[targetIndex], shuffled[index]];
+  }
+  return shuffled;
+};
+
+const getStudentTestSettings = (test) => ({
+  shuffleQuestions: Boolean(test.settings?.shuffleQuestions),
+  shuffleOptions: Boolean(test.settings?.shuffleOptions),
+  resultVisibility: test.settings?.resultVisibility || "after_publish",
+  allowReview: Boolean(test.settings?.allowReview),
+  attemptsAllowed: Math.max(1, Number(test.settings?.attemptsAllowed || 1)),
+  layout: test.settings?.layout || "all_questions",
+  allowBackNavigation: test.settings?.allowBackNavigation !== false,
+  antiCheating: {
+    requireFullScreen: Boolean(test.settings?.antiCheating?.requireFullScreen),
+    trackTabSwitch: Boolean(test.settings?.antiCheating?.trackTabSwitch),
+    maxWarnings: Math.max(0, Number(test.settings?.antiCheating?.maxWarnings ?? 3)),
+    autoSubmitOnViolation: Boolean(test.settings?.antiCheating?.autoSubmitOnViolation),
+    disableCopyPaste: Boolean(test.settings?.antiCheating?.disableCopyPaste),
+    disableRightClick: Boolean(test.settings?.antiCheating?.disableRightClick),
+  },
+});
+
+const serializeStudentTest = (test, attempt = null, now = new Date(), attemptsUsed = 0) => {
   const plain = test.toObject ? test.toObject() : test;
   const status = computeLifecycleStatus(plain, now);
   const endAt = plain.schedule?.endAt ? new Date(plain.schedule.endAt) : null;
-  const canStart = status === "live" && !plain.schedule?.isPaused && (!endAt || now < endAt);
+  const settings = getStudentTestSettings(plain);
+  const canResume =
+    attempt?.status === "in_progress" &&
+    status === "live" &&
+    !plain.schedule?.isPaused &&
+    (!endAt || now < endAt);
+  const usedAttempts = attemptsUsed || Number(attempt?.attemptsUsed || 0);
+  const canStart =
+    canResume ||
+    (status === "live" &&
+      !plain.schedule?.isPaused &&
+      (!endAt || now < endAt) &&
+      usedAttempts < settings.attemptsAllowed);
+  const resultVisible =
+    settings.resultVisibility === "immediate" ||
+    (settings.resultVisibility === "after_publish" && Boolean(plain.resultsPublished));
   return {
     _id: plain._id,
     title: plain.title,
@@ -142,6 +190,25 @@ const serializeStudentTest = (test, attempt = null, now = new Date()) => {
     schedule: plain.schedule,
     status,
     canStart,
+    attemptsUsed: usedAttempts,
+    attemptsAllowed: settings.attemptsAllowed,
+    resultVisible,
+    questionCount: plain.questions?.length || 0,
+    answeredQuestionCount: ["submitted", "auto_submitted", "graded", "expired"].includes(attempt?.status)
+      ? (attempt.answers || []).filter((answer) =>
+          (answer.selectedOptions || []).length || String(answer.textAnswer || "").trim(),
+        ).length
+      : 0,
+    pendingQuestionCount: ["submitted", "auto_submitted", "graded", "expired"].includes(attempt?.status)
+      ? Math.max(
+          0,
+          (plain.questions?.length || 0) -
+            (attempt.answers || []).filter((answer) =>
+              (answer.selectedOptions || []).length || String(answer.textAnswer || "").trim(),
+            ).length,
+        )
+      : 0,
+    settings,
     attempt: attempt
       ? {
           _id: attempt._id,
@@ -149,9 +216,13 @@ const serializeStudentTest = (test, attempt = null, now = new Date()) => {
           startedAt: attempt.startedAt,
           expiresAt: attempt.expiresAt,
           submittedAt: attempt.submittedAt,
-          score: attempt.score,
-          percentage: attempt.percentage,
-          passed: attempt.passed,
+          ...(resultVisible
+            ? {
+                score: attempt.score,
+                percentage: attempt.percentage,
+                passed: attempt.passed,
+              }
+            : {}),
         }
       : null,
   };
@@ -267,19 +338,20 @@ const buildTestPayload = (body = {}, currentTest = null) => {
       shuffleOptions: Boolean(body.settings?.shuffleOptions),
       resultVisibility: body.settings?.resultVisibility || "after_publish",
       allowReview: Boolean(body.settings?.allowReview),
-      attemptsAllowed: Number(body.settings?.attemptsAllowed || 1),
+      attemptsAllowed: Math.max(1, Number(body.settings?.attemptsAllowed ?? 1)),
       layout: body.settings?.layout || "all_questions",
       allowBackNavigation: body.settings?.allowBackNavigation !== false,
       antiCheating: {
         requireFullScreen: Boolean(body.settings?.antiCheating?.requireFullScreen),
         trackTabSwitch: body.settings?.antiCheating?.trackTabSwitch !== false,
-        maxWarnings: Number(body.settings?.antiCheating?.maxWarnings || 3),
+        maxWarnings: Math.max(0, Number(body.settings?.antiCheating?.maxWarnings ?? 3)),
         autoSubmitOnViolation: body.settings?.antiCheating?.autoSubmitOnViolation !== false,
         disableCopyPaste: body.settings?.antiCheating?.disableCopyPaste !== false,
         disableRightClick: body.settings?.antiCheating?.disableRightClick !== false,
       },
       paperHeader: normalizePaperHeader(body.settings?.paperHeader || currentTest?.settings?.paperHeader || {}),
     },
+    resultsPublished: Boolean(body.resultsPublished ?? currentTest?.resultsPublished ?? false),
   };
 };
 
@@ -457,11 +529,120 @@ export const getMyStudentTests = async (req, res) => {
       student: studentId,
       test: { $in: tests.map((test) => test._id) },
     }).lean();
-    const attemptByTest = new Map(attempts.map((attempt) => [String(attempt.test), attempt]));
+    const attemptByTest = new Map();
+    const attemptsUsedByTest = new Map();
+    attempts.forEach((attempt) => {
+      const testId = String(attempt.test);
+      attemptByTest.set(testId, attempt);
+      attemptsUsedByTest.set(testId, Number(attempt.attemptsUsed || 1));
+    });
 
     res.status(200).json({
       success: true,
-      data: tests.map((test) => serializeStudentTest(test, attemptByTest.get(String(test._id)), now)),
+      data: tests.map((test) =>
+        serializeStudentTest(
+          test,
+          attemptByTest.get(String(test._id)),
+          now,
+          attemptsUsedByTest.get(String(test._id)) || 0,
+        ),
+      ),
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+export const getMyStudentTestReview = async (req, res) => {
+  try {
+    const studentUser = await getStudentPortalUser(req);
+    const studentId = String(studentUser.student);
+    const batchIds = await getStudentBatchIds(studentId);
+    const test = await Test.findOne({
+      _id: req.params.id,
+      isDeleted: false,
+      "assignedBatches.batch": { $in: batchIds },
+      "excludedStudents.student": { $ne: studentId },
+    })
+      .populate("course", "courseId courseName")
+      .populate("teacherUser", "name email profile");
+
+    if (!test) return res.status(404).json({ success: false, message: "Assigned test not found." });
+
+    const attempt = await TestAttempt.findOne({
+      test: test._id,
+      student: studentId,
+      status: { $in: ["submitted", "auto_submitted", "graded", "expired"] },
+    }).lean();
+    if (!attempt) {
+      return res.status(404).json({ success: false, message: "No completed attempt was found for this test." });
+    }
+
+    const settings = getStudentTestSettings(test);
+    const answersByQuestion = new Map(
+      (attempt.answers || []).map((answer) => [String(answer.questionId), answer]),
+    );
+    let paperQuestions = [...(test.questions || [])];
+    if (settings.shuffleQuestions) {
+      paperQuestions = shuffleWithSeed(paperQuestions, attempt._id);
+    }
+    const questions = paperQuestions.map((question, index) => {
+      const questionData = question.toObject ? question.toObject() : question;
+      if (settings.shuffleOptions) {
+        questionData.options = shuffleWithSeed(
+          questionData.options || [],
+          `${attempt._id}:${questionData._id}`,
+        );
+      }
+      const answer = answersByQuestion.get(String(questionData._id));
+      const selectedOptions = answer?.selectedOptions || [];
+      const textAnswer = answer?.textAnswer || "";
+      return {
+        _id: questionData._id,
+        order: index,
+        questionType: questionData.questionType,
+        questionText: questionData.questionText,
+        imageUrl: questionData.imageUrl,
+        marks: questionData.marks,
+        options: (questionData.options || []).map((option, optionIndex) => ({
+          _id: String(option._id || optionIndex),
+          text: option.text,
+          selected: selectedOptions.map(String).includes(String(option._id || optionIndex)),
+        })),
+        selectedOptions,
+        textAnswer,
+        answered: selectedOptions.length > 0 || Boolean(String(textAnswer).trim()),
+      };
+    });
+    const answeredQuestionCount = questions.filter((question) => question.answered).length;
+    const resultVisible =
+      settings.resultVisibility === "immediate" ||
+      (settings.resultVisibility === "after_publish" && Boolean(test.resultsPublished));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        _id: test._id,
+        title: test.title,
+        course: test.course,
+        topic: test.topic,
+        teacher: test.teacherUser,
+        status: attempt.status,
+        submittedAt: attempt.submittedAt,
+        totalMarks: test.totalMarks,
+        questionCount: questions.length,
+        answeredQuestionCount,
+        pendingQuestionCount: questions.length - answeredQuestionCount,
+        resultVisible,
+        ...(resultVisible
+          ? {
+              score: attempt.score,
+              percentage: attempt.percentage,
+              passed: attempt.passed,
+            }
+          : {}),
+        questions,
+      },
     });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message });
@@ -495,12 +676,10 @@ export const startMyStudentTest = async (req, res) => {
 
     const assignedBatchIds = (test.assignedBatches || []).map((item) => String(item.batch));
     const studentBatch = batchIds.find((batchId) => assignedBatchIds.includes(String(batchId)));
-    let attempt = await TestAttempt.findOne({ test: test._id, student: studentId });
-
-    if (attempt && ["submitted", "auto_submitted", "graded"].includes(attempt.status)) {
-      return res.status(400).json({ success: false, message: "You have already submitted this test." });
-    }
-
+    let attempt = await TestAttempt.findOne({
+      test: test._id,
+      student: studentId,
+    });
     if (!attempt) {
       attempt = await TestAttempt.create({
         test: test._id,
@@ -509,26 +688,57 @@ export const startMyStudentTest = async (req, res) => {
         startedAt: now,
         expiresAt: endAt,
         status: "in_progress",
+        attemptsUsed: 1,
       });
-    } else {
+    } else if (attempt.status !== "in_progress") {
+      const attemptsAllowed = Math.max(1, Number(test.settings?.attemptsAllowed || 1));
+      if (Number(attempt.attemptsUsed || 1) >= attemptsAllowed) {
+        return res.status(400).json({ success: false, message: "You have used all attempts allowed for this test." });
+      }
+      attempt.startedAt = now;
+      attempt.expiresAt = endAt;
+      attempt.submittedAt = null;
       attempt.status = "in_progress";
-      attempt.startedAt = attempt.startedAt || now;
-      attempt.expiresAt = attempt.expiresAt || endAt;
+      attempt.answers = [];
+      attempt.score = 0;
+      attempt.percentage = 0;
+      attempt.passed = false;
+      attempt.attemptsUsed = Number(attempt.attemptsUsed || 1) + 1;
       await attempt.save();
     }
+
+    const settings = getStudentTestSettings(test);
+    let paperQuestions = [...(test.questions || [])];
+    if (settings.shuffleQuestions) {
+      paperQuestions = shuffleWithSeed(paperQuestions, attempt._id);
+    }
+    const sanitizedQuestions = paperQuestions.map((question, index) => {
+      const questionData = question.toObject ? question.toObject() : question;
+      if (settings.shuffleOptions) {
+        questionData.options = shuffleWithSeed(
+          questionData.options || [],
+          `${attempt._id}:${questionData._id}`,
+        );
+      }
+      return sanitizeQuestionForStudent(questionData, index);
+    });
 
     res.status(200).json({
       success: true,
       data: {
         test: {
           ...serializeStudentTest(test, attempt, now),
-          questions: (test.questions || []).map((question, index) => sanitizeQuestionForStudent(question, index)),
-          settings: {
-            layout: test.settings?.layout || "all_questions",
-            allowBackNavigation: test.settings?.allowBackNavigation !== false,
-          },
+          questions: sanitizedQuestions,
+          settings,
         },
-        attempt,
+        attempt: {
+          _id: attempt._id,
+          status: attempt.status,
+          attemptsUsed: attempt.attemptsUsed || 1,
+          startedAt: attempt.startedAt,
+          expiresAt: attempt.expiresAt,
+          answers: attempt.answers || [],
+        },
       },
     });
   } catch (error) {
@@ -544,7 +754,11 @@ export const submitMyStudentTest = async (req, res) => {
     if (!test) return res.status(404).json({ success: false, message: "Test not found." });
 
     const now = new Date();
-    const attempt = await TestAttempt.findOne({ test: test._id, student: studentId });
+    const attempt = await TestAttempt.findOne({
+      test: test._id,
+      student: studentId,
+      status: "in_progress",
+    }).sort({ createdAt: -1 });
     if (!attempt) return res.status(404).json({ success: false, message: "Start the test before submitting." });
     if (["submitted", "auto_submitted", "graded"].includes(attempt.status)) {
       return res.status(400).json({ success: false, message: "This test is already submitted." });
@@ -557,18 +771,29 @@ export const submitMyStudentTest = async (req, res) => {
     attempt.percentage = grading.percentage;
     attempt.passed = grading.passed;
     attempt.submittedAt = now;
-    attempt.status = endAt && now > endAt ? "auto_submitted" : "submitted";
+    attempt.status = req.body?.autoSubmitted || (endAt && now > endAt)
+      ? "auto_submitted"
+      : "submitted";
     await attempt.save();
 
+    const resultVisibility = test.settings?.resultVisibility || "after_publish";
+    const resultVisible =
+      resultVisibility === "immediate" ||
+      (resultVisibility === "after_publish" && Boolean(test.resultsPublished));
     res.status(200).json({
       success: true,
       message: "Test submitted successfully",
       data: {
         attemptId: attempt._id,
         status: attempt.status,
-        score: attempt.score,
-        percentage: attempt.percentage,
-        passed: attempt.passed,
+        resultVisible,
+        ...(resultVisible
+          ? {
+              score: attempt.score,
+              percentage: attempt.percentage,
+              passed: attempt.passed,
+            }
+          : {}),
       },
     });
   } catch (error) {
@@ -825,6 +1050,34 @@ export const publishTest = async (req, res) => {
     await test.save();
     await createAudit(test, req, "published", before, test.toObject());
     res.status(200).json({ success: true, message: "Test published", data: await attachAssignmentStats(test) });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+export const publishTestResults = async (req, res) => {
+  try {
+    const test = await Test.findOne({ _id: req.params.id, isDeleted: false });
+    if (!test) return res.status(404).json({ success: false, message: "Test not found" });
+    await assertCourseAccess(req, test.course);
+    if (!(req.currentUser?.isSuperAdmin || req.user?.isSuperAdmin) && String(test.teacherUser) !== String(getUserId(req))) {
+      return res.status(403).json({ success: false, message: "You can only publish results for your own tests." });
+    }
+    if ((test.settings?.resultVisibility || "after_publish") !== "after_publish") {
+      return res.status(400).json({ success: false, message: "This test is not configured for manual result publishing." });
+    }
+    if (computeLifecycleStatus(test, new Date()) !== "completed") {
+      return res.status(400).json({ success: false, message: "Results can be published after the test ends." });
+    }
+
+    test.resultsPublished = true;
+    await test.save();
+    await createAudit(test, req, "results_published", null, { resultsPublished: true });
+    res.status(200).json({
+      success: true,
+      message: "Test results published to students.",
+      data: await attachAssignmentStats(test),
+    });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
