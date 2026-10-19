@@ -1286,22 +1286,87 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         y = await drawTestPaperHeader(doc, test);
       };
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
-      y = addPdfText(doc, test.title || "Test Paper", 14, y, { maxWidth: 180, lineHeight: 7 });
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      const courseNames = (test.courses || [])
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const centerX = pageWidth / 2;
+      const contentWidth = pageWidth - 28;
+      const testCourses = (test.courses || [])
         .map((course) => course?.courseName)
         .filter(Boolean);
-      y = addPdfText(doc, `Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}    Topic: ${test.topic || "N/A"}    Marks: ${test.totalMarks || 0}`, 14, y + 1);
-      y = addPdfText(doc, `Duration: ${test.schedule?.durationMinutes || "-"} minutes    Date: ${dayjs().format("DD MMM YYYY")}`, 14, y);
+      const courseName =
+        testCourses.join(", ") || test.course?.courseName || "N/A";
+
+      await addPageIfNeeded(48);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(14);
+      y = addPdfText(doc, test.title || "Test Paper", centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 7,
+      });
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      y = addPdfText(
+        doc,
+        `Course: ${courseName}    Topic: ${test.topic || "N/A"}    Marks: ${test.totalMarks || 0}`,
+        centerX,
+        y + 1,
+        { align: "center", maxWidth: contentWidth, lineHeight: 5 },
+      );
+      y = addPdfText(
+        doc,
+        `Duration: ${test.schedule?.durationMinutes || "-"} minutes    Date: ${dayjs().format("DD MMM YYYY")}`,
+        centerX,
+        y,
+        { align: "center", maxWidth: contentWidth, lineHeight: 5 },
+      );
+
+      y += 3;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      y = addPdfText(doc, "Test Time", centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 6,
+      });
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      const startAt = test.schedule?.startAt
+        ? dayjs(test.schedule.startAt).format("DD MMM YYYY, hh:mm A")
+        : "Not set";
+      const endAt = test.schedule?.endAt
+        ? dayjs(test.schedule.endAt).format("DD MMM YYYY, hh:mm A")
+        : "Not set";
+      y = addPdfText(doc, `Start: ${startAt}    End: ${endAt}`, centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 5,
+      });
       if (test.instructions) {
         y += 3;
         doc.setFont("helvetica", "bold");
         y = addPdfText(doc, "Instructions", 14, y);
         doc.setFont("helvetica", "normal");
         y = addPdfText(doc, test.instructions, 14, y, { maxWidth: 180 });
+      }
+
+      if (test.questions?.length) {
+        await addPageIfNeeded(18);
+        y += 3;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(12);
+        y = addPdfText(doc, "Test Questions", 14, y, {
+          maxWidth: 180,
+          lineHeight: 6,
+        });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        y = addPdfText(
+          doc,
+          "Read each question carefully and choose or write the best answer.",
+          14,
+          y,
+          { maxWidth: 180, lineHeight: 5 },
+        );
       }
 
       for (let index = 0; index < (test.questions || []).length; index += 1) {
