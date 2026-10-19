@@ -66,6 +66,15 @@ export const updateEmployeeStatus = async (id, isActive) => {
   }
 };
 
+export const updateEmployeeModuleAccess = async (id, enabled) => {
+  try {
+    const response = await api.patch(`/employees/${id}/employee-module-access`, { enabled });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
 export const deleteEmployee = async (id) => {
   try {
     const response = await api.delete(`/employees/${id}`);

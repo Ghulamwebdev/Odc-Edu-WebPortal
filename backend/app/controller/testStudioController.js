@@ -73,18 +73,23 @@ const assertCourseAccess = async (req, courseId) => {
   return assignedCourseIds;
 };
 
-const assertBatchAccess = async (req, courseId, batchIds = []) => {
-  await assertCourseAccess(req, courseId);
+const assertBatchAccess = async (req, courseIds, batchIds = []) => {
+  const selectedCourseIds = [
+    ...new Set((Array.isArray(courseIds) ? courseIds : [courseIds]).filter(Boolean).map(String)),
+  ];
+  for (const courseId of selectedCourseIds) {
+    await assertCourseAccess(req, courseId);
+  }
   const uniqueBatchIds = [...new Set(batchIds.map(String))];
   if (!uniqueBatchIds.length) return [];
 
   const batches = await Batch.find({
     _id: { $in: uniqueBatchIds },
-    course: courseId,
+    course: { $in: selectedCourseIds },
   }).lean();
 
   if (batches.length !== uniqueBatchIds.length) {
-    const error = new Error("One or more selected batches are not linked to the selected course.");
+    const error = new Error("One or more selected batches are not linked to the selected courses.");
     error.statusCode = 403;
     throw error;
   }
@@ -158,14 +163,15 @@ const getStudentTestSettings = (test) => ({
 
 const serializeStudentTest = (test, attempt = null, now = new Date(), attemptsUsed = 0) => {
   const plain = test.toObject ? test.toObject() : test;
-  const status = computeLifecycleStatus(plain, now);
+  const lifecycleStatus = computeLifecycleStatus(plain, now);
   const endAt = plain.schedule?.endAt ? new Date(plain.schedule.endAt) : null;
   const settings = getStudentTestSettings(plain);
   const canResume =
     attempt?.status === "in_progress" &&
-    status === "live" &&
     !plain.schedule?.isPaused &&
-    (!endAt || now < endAt);
+    attempt.expiresAt &&
+    now < new Date(attempt.expiresAt);
+  const status = canResume ? "live" : lifecycleStatus;
   const usedAttempts = attemptsUsed || Number(attempt?.attemptsUsed || 0);
   const canStart =
     canResume ||
@@ -176,6 +182,7 @@ const serializeStudentTest = (test, attempt = null, now = new Date(), attemptsUs
   const resultVisible =
     settings.resultVisibility === "immediate" ||
     (settings.resultVisibility === "after_publish" && Boolean(plain.resultsPublished));
+
   return {
     _id: plain._id,
     title: plain.title,
@@ -183,13 +190,17 @@ const serializeStudentTest = (test, attempt = null, now = new Date(), attemptsUs
     instructions: plain.instructions,
     topic: plain.topic,
     course: plain.course,
+    courses: plain.courses?.length ? plain.courses : [plain.course],
     teacher: plain.teacherUser,
     totalMarks: plain.totalMarks,
     passingMarks: plain.passingMarks,
     passingPercentage: plain.passingPercentage,
-    schedule: plain.schedule,
+    schedule: canResume
+      ? { ...plain.schedule, endAt: attempt.expiresAt }
+      : plain.schedule,
     status,
     canStart,
+    canResume,
     attemptsUsed: usedAttempts,
     attemptsAllowed: settings.attemptsAllowed,
     resultVisible,
@@ -291,12 +302,24 @@ const buildTestPayload = (body = {}, currentTest = null) => {
     (question, index) => normalizeQuestion(question, index),
   );
   const computedTotalMarks = questions.reduce((sum, question) => sum + Number(question.marks || 0), 0);
+  const selectedCourseIds = [
+    ...new Set(
+      [
+        ...normalizeArray(body.courseIds || currentTest?.courses || []),
+        body.course || currentTest?.course,
+      ]
+        .filter(Boolean)
+        .map(String),
+    ),
+  ];
+  const primaryCourse = String(body.course || selectedCourseIds[0] || currentTest?.course || "");
 
   return {
     title: stripUnsafeHtml(body.title || currentTest?.title || ""),
     description: stripUnsafeHtml(body.description || ""),
     instructions: stripUnsafeHtml(body.instructions || ""),
-    course: body.course || currentTest?.course,
+    course: primaryCourse,
+    courses: selectedCourseIds.length ? selectedCourseIds : primaryCourse ? [primaryCourse] : [],
     topic: stripUnsafeHtml(body.topic || ""),
     allowedQuestionTypes: normalizeArray(body.allowedQuestionTypes).filter((type) =>
       QUESTION_TYPES.has(type),
@@ -327,7 +350,7 @@ const buildTestPayload = (body = {}, currentTest = null) => {
     },
     assignedBatches: normalizeArray(body.batchIds).map((batchId) => ({
       batch: batchId,
-      course: body.course || currentTest?.course,
+      course: primaryCourse,
     })),
     excludedStudents: normalizeArray(body.excludedStudentIds).map((studentId) => ({
       student: studentId,
@@ -360,10 +383,13 @@ const validatePublishable = (payload) => {
   const now = new Date();
   const questionMarks = payload.questions.reduce((sum, question) => sum + Number(question.marks || 0), 0);
   if (!payload.title) errors.push("Test title is required.");
-  if (!payload.course) errors.push("Course is required.");
+  if (!payload.courses?.length || !payload.course) errors.push("At least one course is required.");
   if (!payload.questions.length) errors.push("At least one question is required.");
   if (!payload.assignedBatches.length) errors.push("At least one batch is required.");
   if (!payload.schedule.startAt || !payload.schedule.endAt) errors.push("Start and end time are required.");
+  if (!Number.isFinite(payload.schedule.durationMinutes) || payload.schedule.durationMinutes < 1) {
+    errors.push("Test duration must be at least 1 minute.");
+  }
   if (payload.schedule.startAt && payload.schedule.startAt <= now) errors.push("Schedule start time must be in the future.");
   if (payload.schedule.startAt && payload.schedule.endAt && payload.schedule.endAt <= payload.schedule.startAt) {
     errors.push("End time must be after start time.");
@@ -474,8 +500,8 @@ export const getTeacherTestStudioOptions = async (req, res) => {
 
 export const previewTestAssignment = async (req, res) => {
   try {
-    const { courseId, batchIds = [], excludedStudentIds = [] } = req.body;
-    const batches = await assertBatchAccess(req, courseId, batchIds);
+    const { courseId, courseIds = [], batchIds = [], excludedStudentIds = [] } = req.body;
+    const batches = await assertBatchAccess(req, courseIds.length ? courseIds : courseId, batchIds);
     const excluded = new Set(excludedStudentIds.map(String));
     const enrollments = await Enrollment.find({
       batch: { $in: batches.map((batch) => batch._id) },
@@ -521,6 +547,7 @@ export const getMyStudentTests = async (req, res) => {
           "excludedStudents.student": { $ne: studentId },
         })
           .populate("course", "courseId courseName")
+          .populate("courses", "courseId courseName")
           .populate("teacherUser", "name email profile")
           .sort({ "schedule.startAt": 1 })
       : [];
@@ -565,6 +592,7 @@ export const getMyStudentTestReview = async (req, res) => {
       "excludedStudents.student": { $ne: studentId },
     })
       .populate("course", "courseId courseName")
+      .populate("courses", "courseId courseName")
       .populate("teacherUser", "name email profile");
 
     if (!test) return res.status(404).json({ success: false, message: "Assigned test not found." });
@@ -670,23 +698,33 @@ export const startMyStudentTest = async (req, res) => {
     const status = computeLifecycleStatus(test, now);
     const startAt = test.schedule?.startAt ? new Date(test.schedule.startAt) : null;
     const endAt = test.schedule?.endAt ? new Date(test.schedule.endAt) : null;
-    if (status !== "live" || test.schedule?.isPaused || (startAt && now < startAt) || (endAt && now >= endAt)) {
+    let attempt = await TestAttempt.findOne({
+      test: test._id,
+      student: studentId,
+    });
+    const canResumeAttempt =
+      attempt?.status === "in_progress" &&
+      attempt.expiresAt &&
+      now < new Date(attempt.expiresAt);
+    if (
+      test.schedule?.isPaused ||
+      (!canResumeAttempt &&
+        (status !== "live" || (startAt && now < startAt) || (endAt && now >= endAt)))
+    ) {
       return res.status(400).json({ success: false, message: "Test paper is available only during the selected test time." });
     }
 
     const assignedBatchIds = (test.assignedBatches || []).map((item) => String(item.batch));
     const studentBatch = batchIds.find((batchId) => assignedBatchIds.includes(String(batchId)));
-    let attempt = await TestAttempt.findOne({
-      test: test._id,
-      student: studentId,
-    });
     if (!attempt) {
+      const durationMs =
+        Math.max(1, Number(test.schedule?.durationMinutes || 60)) * 60 * 1000;
       attempt = await TestAttempt.create({
         test: test._id,
         student: studentId,
         batch: studentBatch,
         startedAt: now,
-        expiresAt: endAt,
+        expiresAt: new Date(now.getTime() + durationMs),
         status: "in_progress",
         attemptsUsed: 1,
       });
@@ -696,7 +734,9 @@ export const startMyStudentTest = async (req, res) => {
         return res.status(400).json({ success: false, message: "You have used all attempts allowed for this test." });
       }
       attempt.startedAt = now;
-      attempt.expiresAt = endAt;
+      attempt.expiresAt = new Date(
+        now.getTime() + Math.max(1, Number(test.schedule?.durationMinutes || 60)) * 60 * 1000,
+      );
       attempt.submittedAt = null;
       attempt.status = "in_progress";
       attempt.answers = [];
@@ -705,6 +745,8 @@ export const startMyStudentTest = async (req, res) => {
       attempt.passed = false;
       attempt.attemptsUsed = Number(attempt.attemptsUsed || 1) + 1;
       await attempt.save();
+    } else if (!canResumeAttempt) {
+      return res.status(400).json({ success: false, message: "Your test duration has ended." });
     }
 
     const settings = getStudentTestSettings(test);
@@ -728,6 +770,10 @@ export const startMyStudentTest = async (req, res) => {
       data: {
         test: {
           ...serializeStudentTest(test, attempt, now),
+          schedule: {
+            ...(test.schedule?.toObject ? test.schedule.toObject() : test.schedule),
+            endAt: attempt.expiresAt,
+          },
           questions: sanitizedQuestions,
           settings,
         },
@@ -764,7 +810,7 @@ export const submitMyStudentTest = async (req, res) => {
       return res.status(400).json({ success: false, message: "This test is already submitted." });
     }
 
-    const endAt = test.schedule?.endAt ? new Date(test.schedule.endAt) : null;
+    const endAt = attempt.expiresAt ? new Date(attempt.expiresAt) : null;
     const grading = gradeTestAttempt(test.toObject(), req.body.answers || []);
     attempt.answers = grading.answers;
     attempt.score = grading.score;
@@ -804,10 +850,14 @@ export const submitMyStudentTest = async (req, res) => {
 export const getTests = async (req, res) => {
   try {
     const { status, search, courseId } = req.query;
-    const courseIds = await getAssignedCourseIds(req);
+    const accessibleCourseIds = await getAssignedCourseIds(req);
+    const courseIds = courseId ? [String(courseId)] : accessibleCourseIds;
     const filter = {
       isDeleted: false,
-      course: { $in: courseId ? [courseId] : courseIds },
+      $or: [
+        { courses: { $in: courseIds } },
+        { course: { $in: courseIds } },
+      ],
     };
     if (!(req.currentUser?.isSuperAdmin || req.user?.isSuperAdmin)) {
       filter.teacherUser = getUserId(req);
@@ -817,6 +867,7 @@ export const getTests = async (req, res) => {
 
     const tests = await Test.find(filter)
       .populate("course", "courseId courseName")
+      .populate("courses", "courseId courseName")
       .populate("assignedBatches.batch", "batchName batchCode")
       .sort({ createdAt: -1 });
 
@@ -842,6 +893,7 @@ export const getTestById = async (req, res) => {
   try {
     const test = await Test.findOne({ _id: req.params.id, isDeleted: false })
       .populate("course", "courseId courseName")
+      .populate("courses", "courseId courseName")
       .populate("assignedBatches.batch", "batchName batchCode shift status")
       .populate("excludedStudents.student", "studentName registrationNo")
       .lean();
@@ -994,7 +1046,15 @@ export const reassignRemainingStudents = async (req, res) => {
 export const saveTest = async (req, res) => {
   try {
     const payload = buildTestPayload(req.body);
-    await assertBatchAccess(req, payload.course, payload.assignedBatches.map((item) => item.batch));
+    const validatedBatches = await assertBatchAccess(
+      req,
+      payload.courses,
+      payload.assignedBatches.map((item) => item.batch),
+    );
+    payload.assignedBatches = validatedBatches.map((batch) => ({
+      batch: String(batch._id),
+      course: String(batch.course),
+    }));
     const test = await Test.create({
       ...payload,
       teacherUser: getUserId(req),
@@ -1022,7 +1082,15 @@ export const updateTest = async (req, res) => {
 
     const before = test.toObject();
     const payload = buildTestPayload(req.body, test);
-    await assertBatchAccess(req, payload.course, payload.assignedBatches.map((item) => item.batch));
+    const validatedBatches = await assertBatchAccess(
+      req,
+      payload.courses,
+      payload.assignedBatches.map((item) => item.batch),
+    );
+    payload.assignedBatches = validatedBatches.map((batch) => ({
+      batch: String(batch._id),
+      course: String(batch.course),
+    }));
     Object.assign(test, payload);
     await test.save();
     await syncQuestionBank(test, req);

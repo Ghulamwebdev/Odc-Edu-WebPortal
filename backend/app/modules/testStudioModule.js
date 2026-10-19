@@ -124,6 +124,7 @@ const testSchema = new mongoose.Schema(
     description: { type: String, default: "" },
     instructions: { type: String, default: "" },
     course: { type: String, ref: "Course", required: true, index: true },
+    courses: [{ type: String, ref: "Course" }],
     teacherUser: { type: String, ref: "User", required: true, index: true },
     topic: { type: String, default: "", trim: true },
     allowedQuestionTypes: { type: [String], default: [] },

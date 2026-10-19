@@ -762,7 +762,12 @@ const StudentPortal = () => {
         render: (_, test) => (
           <div>
             <div className="font-semibold text-primary">{test.title}</div>
-            <div className="text-xs text-slate-500">{test.course?.courseName || "Course"} {test.topic ? `- ${test.topic}` : ""}</div>
+            <div className="text-xs text-slate-500">
+              {(test.courses || [test.course])
+                .map((course) => course?.courseName)
+                .filter(Boolean)
+                .join(", ") || "Course"} {test.topic ? `- ${test.topic}` : ""}
+            </div>
           </div>
         ),
       },

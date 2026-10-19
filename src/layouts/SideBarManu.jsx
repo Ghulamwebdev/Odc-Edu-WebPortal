@@ -37,6 +37,7 @@ const SideBarManu = () => {
     (location.pathname === "/dashboard/super-admin" && currentSection !== "overview") ||
     location.pathname === "/dashboard/app-settings" ||
     location.pathname === "/dashboard/employees" ||
+    location.pathname === "/dashboard/employee-accounts" ||
     location.pathname === "/dashboard/test-studio";
   const isStudentsSectionActive = location.pathname.startsWith("/dashboard/students");
   const isStudentPortalAccountsActive = location.pathname === "/dashboard/students/portal-accounts";
@@ -80,6 +81,9 @@ const SideBarManu = () => {
         }
         if (item.key === "test_studio") {
           return { ...item, path: "/employee-dashboard/test-studio" };
+        }
+        if (item.key === "employees") {
+          return { ...item, path: "/employee-dashboard/employees" };
         }
         return item;
       });
@@ -167,9 +171,9 @@ const SideBarManu = () => {
 
   const superAdminLinks = [
     {
-      key: "employees",
-      title: "Employees",
-      path: "/dashboard/employees",
+      key: "employee-accounts",
+      title: "Employee Accounts",
+      path: "/dashboard/employee-accounts",
       icon: MdPeopleAlt,
     },
     {
@@ -379,8 +383,8 @@ const SideBarManu = () => {
                 <ul className="mt-2 space-y-1 pl-4">
                   {superAdminLinks.map((item) => {
                     const active =
-                      item.key === "employees"
-                        ? location.pathname === "/dashboard/employees"
+                      item.key === "employee-accounts"
+                        ? location.pathname === "/dashboard/employee-accounts"
                         : item.key === "test-studio"
                         ? location.pathname === "/dashboard/test-studio"
                         : item.key === "app-settings"

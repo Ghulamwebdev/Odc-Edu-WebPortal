@@ -118,6 +118,9 @@ const serializeEmployee = async (user) => {
     designation: user.details?.job || user.details?.designation || "",
     status: user.isActive ? "active" : "inactive",
     isActive: user.isActive,
+    employeeModuleEnabled: user.permissions?.some(
+      (permission) => permission.module === "employees" && permission.actions?.view,
+    ) || false,
     profile: user.profile,
     joiningDate: user.createdAt,
     createdAt: user.createdAt,
@@ -161,6 +164,57 @@ export const listEmployees = async (req, res) => {
     res.status(200).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: "Failed to fetch employees", error: error.message });
+  }
+};
+
+export const setEmployeeModuleAccess = async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "Employee module access must be a boolean.",
+      });
+    }
+
+    const employee = await UserAuth.findOne({
+      _id: req.params.id,
+      accountType: "employee",
+    });
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee account not found." });
+    }
+
+    const permissions = (employee.permissions || []).map((permission) => ({
+      module: permission.module,
+      actions: permission.actions?.toObject
+        ? permission.actions.toObject()
+        : permission.actions,
+    }));
+    const employeeModulePermission = permissions.find(
+      (permission) => permission.module === "employees",
+    );
+    if (employeeModulePermission) {
+      employeeModulePermission.actions = {
+        ...employeeModulePermission.actions,
+        view: enabled,
+      };
+    } else {
+      permissions.push({ module: "employees", actions: { view: enabled } });
+    }
+
+    employee.permissions = normalizePermissions(permissions);
+    await employee.save();
+    res.status(200).json({
+      success: true,
+      data: { _id: employee._id, employeeModuleEnabled: enabled },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to update employee module access",
+      error: error.message,
+    });
   }
 };
 

@@ -35,7 +35,7 @@ export default function ProtectedRoute({
     return <Navigate to="/student-portal" replace />;
   }
 
-  if (employeeMode && !employeeOnly) {
+  if (employeeMode && !employeeOnly && !moduleKey) {
     return <Navigate to="/employee-dashboard" replace />;
   }
 
