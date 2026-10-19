@@ -92,7 +92,8 @@ function AppRouter() {
         >
           <Route index element={<ProtectedRoute moduleKey="dashboard"><Dashboard /></ProtectedRoute>} />
           <Route path="courses" element={<ProtectedRoute moduleKey="courses"><Courses /></ProtectedRoute>} />
-          <Route path="employees" element={<ProtectedRoute moduleKey="employees"><EmployeeManagement /></ProtectedRoute>} />
+          <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
+          <Route path="employee-accounts" element={<ProtectedRoute superAdminOnly><EmployeeManagement /></ProtectedRoute>} />
           <Route path="test-studio" element={<ProtectedRoute moduleKey="test_studio"><TestStudio /></ProtectedRoute>} />
           <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio"><TestStudio setupMode /></ProtectedRoute>} />
           <Route path="test-studio/:id" element={<ProtectedRoute moduleKey="test_studio"><TestStudio detailMode /></ProtectedRoute>} />
@@ -165,6 +166,7 @@ function AppRouter() {
           }
         >
           <Route index element={<EmployeeDashboard />} />
+          <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
           <Route path="test-studio" element={<TestStudio />} />
           <Route path="test-studio/create" element={<TestStudio setupMode />} />
           <Route path="test-studio/:id" element={<TestStudio detailMode />} />

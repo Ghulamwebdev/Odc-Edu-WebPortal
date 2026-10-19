@@ -172,6 +172,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const autoSaveErrorShownRef = useRef(false);
   const localStorageErrorShownRef = useRef(false);
   const selectedCourse = Form.useWatch("course", { form, preserve: true });
+  const selectedCourseValues = Form.useWatch("courseIds", { form, preserve: true }) || [];
   const selectedBatchIds = Form.useWatch("batchIds", { form, preserve: true }) || [];
   const selectedQuestionLayout =
     Form.useWatch(["settings", "layout"], { form, preserve: true }) || "all_questions";
@@ -406,15 +407,6 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       ),
     [options],
   );
-  const batches = useMemo(
-    () =>
-      selectedCourse
-        ? allAssignedBatches.filter(
-            (batch) => String(batch.courseId || batch.course) === String(selectedCourse),
-          )
-        : allAssignedBatches,
-    [allAssignedBatches, selectedCourse],
-  );
   const selectedCourseId =
     selectedCourse && typeof selectedCourse === "object"
       ? selectedCourse._id
@@ -422,17 +414,22 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const selectedCourseIds = [
     ...new Set(
       [
+        ...selectedCourseValues,
         selectedCourseId,
-        ...allAssignedBatches
-          .filter((batch) =>
-            selectedBatchIds.some((id) => String(id?._id || id) === String(batch._id)),
-          )
-          .map((batch) => batch.courseId || batch.course),
       ]
         .map((id) => String(id || ""))
         .filter(Boolean),
     ),
   ];
+  const batches = useMemo(
+    () =>
+      selectedCourseIds.length
+        ? allAssignedBatches.filter((batch) =>
+            selectedCourseIds.includes(String(batch.courseId || batch.course)),
+          )
+        : allAssignedBatches,
+    [allAssignedBatches, selectedCourseIds],
+  );
   const selectedCourseRecords = selectedCourseIds.map(
     (courseId) =>
       options.find((course) => String(course._id) === courseId) ||
@@ -478,7 +475,13 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     const keyword = filters.search.trim().toLowerCase();
     if (!keyword) return tests;
     return tests.filter((test) =>
-      [test.title, test.course?.courseName, test.topic, test.status]
+      [
+        test.title,
+        test.course?.courseName,
+        ...(test.courses || []).map((course) => course?.courseName),
+        test.topic,
+        test.status,
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -506,6 +509,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         allowLateEntry: true,
         graceMinutes: 0,
       },
+      courseIds: [],
       batchIds: [],
       excludedStudentIds: [],
       settings: {
@@ -551,6 +555,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       description: test.description,
       instructions: test.instructions,
       course: test.course?._id || test.course,
+      courseIds: [
+        ...new Set(
+          [
+            ...(test.courses || []).map((course) => course?._id || course),
+            ...(test.assignedBatches || []).map(
+              (item) => item.batch?.course?._id || item.batch?.course,
+            ),
+            test.course?._id || test.course,
+          ]
+            .map((courseId) => String(courseId || ""))
+            .filter(Boolean),
+        ),
+      ],
       topic: test.topic,
       allowedQuestionTypes: test.allowedQuestionTypes || [],
       totalMarks: test.totalMarks,
@@ -582,6 +599,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
     return {
       ...values,
+      courseIds: selectedCourseIds,
       sections,
       wizardStep: currentStep,
       questions: cleanedQuestions.map((question, index) => ({
@@ -600,7 +618,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         endAt: values.schedule?.endAt ? values.schedule.endAt.toISOString() : null,
       },
     };
-  }, [form, questions, sections, currentStep]);
+  }, [form, questions, sections, currentStep, selectedCourseIds]);
 
   const continueLocalRecoveryDraft = () => {
     if (!localRecoveryDraft) return;
@@ -608,6 +626,9 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     setEditingTest(null);
     form.setFieldsValue({
       ...localRecoveryDraft.values,
+      courseIds:
+        localRecoveryDraft.values.courseIds ||
+        (localRecoveryDraft.values.course ? [localRecoveryDraft.values.course] : []),
       schedule: {
         ...localRecoveryDraft.values.schedule,
         startAt: localRecoveryDraft.values.schedule?.startAt ? dayjs(localRecoveryDraft.values.schedule.startAt) : null,
@@ -707,12 +728,15 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     const issues = [];
 
     if (!values.title) issues.push("Title is required");
-    if (!values.course) issues.push("Course is required");
+    if (!values.courseIds?.length && !values.course) issues.push("Select at least one course");
     if (!nonEmptyQuestions.length) issues.push("At least one question with text is required");
     if (Number(values.totalMarks || 0) !== questionMarks) {
       issues.push("Total marks must equal question marks");
     }
     if (!values.batchIds?.length) issues.push("At least one batch must be selected");
+    if (Number(values.schedule?.durationMinutes || 0) < 1) {
+      issues.push("Test duration must be at least 1 minute");
+    }
     if (!values.schedule?.startAt) issues.push("Start time is required");
     if (!values.schedule?.endAt) issues.push("End time is required");
     if (values.schedule?.startAt && values.schedule.startAt.isBefore(dayjs())) {
@@ -895,12 +919,13 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const handleAssignmentPreview = async () => {
     try {
       const values = form.getFieldsValue(true);
-      if (!values.course || !values.batchIds?.length) {
+      if (!(values.courseIds?.length || values.course) || !values.batchIds?.length) {
         message.warning("Select a course and at least one batch first.");
         return;
       }
       const response = await previewTestAssignment({
         courseId: values.course,
+        courseIds: values.courseIds || [],
         batchIds: values.batchIds,
         excludedStudentIds: values.excludedStudentIds || [],
       });
@@ -912,6 +937,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
   const handleNextStep = async () => {
     setCurrentStep((prev) => prev + 1);
+  };
+
+  const handleStepChange = (step) => {
+    setCurrentStep(Math.max(0, Math.min(stepItems.length - 1, step)));
   };
 
   const addQuestion = (type = form.getFieldValue("allowedQuestionTypes")?.[0] || "mcq_single") => {
@@ -1257,19 +1286,87 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         y = await drawTestPaperHeader(doc, test);
       };
 
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const centerX = pageWidth / 2;
+      const contentWidth = pageWidth - 28;
+      const testCourses = (test.courses || [])
+        .map((course) => course?.courseName)
+        .filter(Boolean);
+      const courseName =
+        testCourses.join(", ") || test.course?.courseName || "N/A";
+
+      await addPageIfNeeded(48);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
-      y = addPdfText(doc, test.title || "Test Paper", 14, y, { maxWidth: 180, lineHeight: 7 });
+      doc.setFontSize(14);
+      y = addPdfText(doc, test.title || "Test Paper", centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 7,
+      });
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
-      y = addPdfText(doc, `Course: ${test.course?.courseName || "N/A"}    Topic: ${test.topic || "N/A"}    Marks: ${test.totalMarks || 0}`, 14, y + 1);
-      y = addPdfText(doc, `Duration: ${test.schedule?.durationMinutes || "-"} minutes    Date: ${dayjs().format("DD MMM YYYY")}`, 14, y);
+      y = addPdfText(
+        doc,
+        `Course: ${courseName}    Topic: ${test.topic || "N/A"}    Marks: ${test.totalMarks || 0}`,
+        centerX,
+        y + 1,
+        { align: "center", maxWidth: contentWidth, lineHeight: 5 },
+      );
+      y = addPdfText(
+        doc,
+        `Duration: ${test.schedule?.durationMinutes || "-"} minutes    Date: ${dayjs().format("DD MMM YYYY")}`,
+        centerX,
+        y,
+        { align: "center", maxWidth: contentWidth, lineHeight: 5 },
+      );
+
+      y += 3;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      y = addPdfText(doc, "Test Time", centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 6,
+      });
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      const startAt = test.schedule?.startAt
+        ? dayjs(test.schedule.startAt).format("DD MMM YYYY, hh:mm A")
+        : "Not set";
+      const endAt = test.schedule?.endAt
+        ? dayjs(test.schedule.endAt).format("DD MMM YYYY, hh:mm A")
+        : "Not set";
+      y = addPdfText(doc, `Start: ${startAt}    End: ${endAt}`, centerX, y, {
+        align: "center",
+        maxWidth: contentWidth,
+        lineHeight: 5,
+      });
       if (test.instructions) {
         y += 3;
         doc.setFont("helvetica", "bold");
         y = addPdfText(doc, "Instructions", 14, y);
         doc.setFont("helvetica", "normal");
         y = addPdfText(doc, test.instructions, 14, y, { maxWidth: 180 });
+      }
+
+      if (test.questions?.length) {
+        await addPageIfNeeded(18);
+        y += 3;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(12);
+        y = addPdfText(doc, "Test Questions", 14, y, {
+          maxWidth: 180,
+          lineHeight: 6,
+        });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        y = addPdfText(
+          doc,
+          "Read each question carefully and choose or write the best answer.",
+          14,
+          y,
+          { maxWidth: 180, lineHeight: 5 },
+        );
       }
 
       for (let index = 0; index < (test.questions || []).length; index += 1) {
@@ -1360,7 +1457,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       };
 
       writeLine(test.title || "Test Results", { bold: true, size: 16 });
-      writeLine(`Course: ${test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`);
+      const courseNames = (test.courses || [])
+        .map((course) => course?.courseName)
+        .filter(Boolean);
+      writeLine(`Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`);
       writeLine(`Assigned batches: ${(test.assignedBatches || []).map((item) => item.batch?.batchName || item.batchName || "Batch").join(", ") || "N/A"}`);
       writeLine(`Report generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}`);
       y += 2;
@@ -1439,13 +1539,34 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       <Form.Item name="title" label="Test Title" rules={[{ required: true, message: "Title is required" }]}>
         <Input className="form-input" placeholder="e.g. Mid Term Assessment" />
       </Form.Item>
-      <Form.Item name="course" label="Course" rules={[{ required: true, message: "Course is required" }]}>
+      <Form.Item name="courseIds" label="Courses" rules={[{ required: true, message: "Select at least one course" }]}>
         <Select
+          mode="multiple"
+          showSearch
+          optionFilterProp="label"
           className="form-input"
-          placeholder="Select assigned course"
+          placeholder="Select one or more courses"
           options={courses.map((course) => ({ label: `${course.courseName} (${course.courseId})`, value: course._id }))}
-          onChange={() => {
-            form.setFieldValue("batchIds", []);
+          onChange={(courseIds) => {
+            const normalizedCourseIds = courseIds.map(String);
+            const currentCourse = String(form.getFieldValue("course") || "");
+            const primaryCourse = normalizedCourseIds.includes(currentCourse)
+              ? currentCourse
+              : normalizedCourseIds[0] || null;
+            form.setFieldValue("course", primaryCourse);
+            const allowedBatchIds = new Set(
+              allAssignedBatches
+                .filter((batch) =>
+                  normalizedCourseIds.includes(String(batch.courseId || batch.course)),
+                )
+                .map((batch) => String(batch._id)),
+            );
+            form.setFieldValue(
+              "batchIds",
+              (form.getFieldValue("batchIds") || []).filter((batchId) =>
+                allowedBatchIds.has(String(batchId?._id || batchId)),
+              ),
+            );
             setAssignmentPreview(null);
           }}
         />
@@ -1729,7 +1850,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         />
       </Form.Item>
       <Form.Item name={["schedule", "durationMinutes"]} label="Duration (minutes)" rules={[{ required: true }]}>
-        <InputNumber className="w-full form-input" min={1} />
+        <InputNumber
+          className="w-full form-input"
+          min={1}
+          onChange={(duration) => {
+            const startAt = form.getFieldValue(["schedule", "startAt"]);
+            if (duration && startAt?.isValid?.()) {
+              form.setFieldValue(
+                ["schedule", "endAt"],
+                startAt.add(Number(duration), "minute"),
+              );
+            }
+          }}
+        />
       </Form.Item>
       <Form.Item name={["schedule", "timezone"]} label="Timezone">
         <Input className="form-input" />
@@ -1750,32 +1883,13 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           mode="multiple"
           showSearch
           optionFilterProp="searchLabel"
-          placeholder="Select batches linked with assigned courses"
+          placeholder="Select batches from any selected course"
           options={batches.map((batch) => ({
             label: `${batch.batchName} (${batch.batchCode}) - ${batch.courseName || "Course"}`,
             value: batch._id,
             searchLabel: `${batch.batchName} ${batch.batchCode} ${batch.courseName} ${batch.courseCode} ${batch.status}`,
           }))}
-          onChange={(values) => {
-            const selectedBatches = allAssignedBatches.filter((batch) =>
-              values.includes(batch._id),
-            );
-            const selectedCourseIds = [
-              ...new Set(
-                selectedBatches
-                  .map((batch) => String(batch.courseId || batch.course || ""))
-                  .filter(Boolean),
-              ),
-            ];
-
-            if (selectedCourseIds.length === 1) {
-              form.setFieldValue("course", selectedCourseIds[0]);
-            } else if (selectedCourseIds.length > 1) {
-              message.warning("Please select batches from one course for a single test.");
-            }
-
-            setAssignmentPreview(null);
-          }}
+          onChange={() => setAssignmentPreview(null)}
           optionRender={(option) => {
             const batch = allAssignedBatches.find((item) => item._id === option.value);
             return (
@@ -1908,7 +2022,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <Steps current={currentStep} items={stepItems} className="mb-6" />
+        <Steps current={currentStep} items={stepItems} onChange={handleStepChange} className="mb-6" />
         <Form form={form} layout="vertical" onValuesChange={() => setFormRevision((revision) => revision + 1)}>
           {renderCurrentStep()}
         </Form>
@@ -2249,7 +2363,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       render: (_, test) => (
         <div>
           <div className="font-ArialBold text-primary">{test.title}</div>
-          <div className="text-xs text-slate-500">{test.course?.courseName || "Course"} · {test.topic || "No topic"}</div>
+          <div className="text-xs text-slate-500">
+            {(test.courses || [test.course])
+              .map((course) => course?.courseName)
+              .filter(Boolean)
+              .join(", ") || "Course"} · {test.topic || "No topic"}
+          </div>
         </div>
       ),
     },
@@ -2386,7 +2505,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           <Button key="publish" type="primary" icon={<SendOutlined />} loading={saving} onClick={handlePublish}>Publish</Button>,
         ]}
       >
-        <Steps current={currentStep} items={stepItems} className="mb-6" />
+        <Steps current={currentStep} items={stepItems} onChange={handleStepChange} className="mb-6" />
         <Form form={form} layout="vertical" onValuesChange={() => setFormRevision((revision) => revision + 1)}>
           {renderCurrentStep()}
         </Form>

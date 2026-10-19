@@ -92,6 +92,18 @@ export const buildPermissionsMap = (user, resolvedRole = null) => {
     };
   });
 
+  if (user?.accountType === "employee") {
+    const employeePermission = user.permissions?.find(
+      (permission) => permission?.module === "employees",
+    );
+    if (employeePermission) {
+      permissionMap.employees = {
+        ...permissionMap.employees,
+        ...employeePermission.actions,
+      };
+    }
+  }
+
   return permissionMap;
 };
 

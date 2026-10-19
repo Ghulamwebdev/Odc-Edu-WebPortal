@@ -1060,8 +1060,8 @@ const SuperAdmin = () => {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button type="primary" onClick={() => navigate("/dashboard/employees")}>
-              Open Employee Management
+            <Button type="primary" onClick={() => navigate("/dashboard/employee-accounts")}>
+              Open Employee Accounts
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => Promise.all([loadRoles(), loadUsers()])}>
               Refresh

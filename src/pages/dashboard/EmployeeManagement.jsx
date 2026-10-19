@@ -27,6 +27,7 @@ import {
   createEmployee,
   deleteEmployee,
   getEmployees,
+  updateEmployeeModuleAccess,
   updateEmployee,
   updateEmployeeStatus,
 } from "../../services/employeeService";
@@ -220,6 +221,32 @@ const EmployeeManagement = () => {
       ),
     },
     {
+      title: "Employees Module",
+      key: "employeeModule",
+      render: (_, employee) => (
+        <Switch
+          checked={employee.employeeModuleEnabled}
+          onChange={async (enabled) => {
+            try {
+              await updateEmployeeModuleAccess(employee._id, enabled);
+              setEmployees((currentEmployees) =>
+                currentEmployees.map((currentEmployee) =>
+                  currentEmployee._id === employee._id
+                    ? { ...currentEmployee, employeeModuleEnabled: enabled }
+                    : currentEmployee,
+                ),
+              );
+              message.success(
+                `Employees module ${enabled ? "enabled" : "disabled"} for ${employee.name}`,
+              );
+            } catch (error) {
+              message.error(error.message || "Failed to update employee module access");
+            }
+          }}
+        />
+      ),
+    },
+    {
       title: "Status",
       key: "status",
       render: (_, employee) => (
@@ -274,15 +301,15 @@ const EmployeeManagement = () => {
             <MdPeopleAlt size={22} style={{ color: "#E8FC0A" }} />
           </div>
           <div>
-            <h2 className="module-title">Employee Management</h2>
-            <p className="module-subtitle">Create employee login accounts and assign courses</p>
+            <h2 className="module-title">Employee Accounts</h2>
+            <p className="module-subtitle">Create portal login accounts and assign courses</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button icon={<ReloadOutlined />} onClick={loadData}>Refresh</Button>
           {permissions.create ? (
             <Button type="primary" icon={<PlusOutlined />} className="btn-lg" onClick={openCreateModal}>
-              Create Employee
+              Create Employee Account
             </Button>
           ) : null}
         </div>
@@ -292,7 +319,7 @@ const EmployeeManagement = () => {
         <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
           <div>
             <div className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#8ea2c4]">
-              Employees
+              Login Accounts
             </div>
             <div className="mt-1 text-[11px] text-[#64748b]">
               {filteredEmployees.length} employee{filteredEmployees.length === 1 ? "" : "s"} found
