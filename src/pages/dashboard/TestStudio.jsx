@@ -120,6 +120,8 @@ const defaultPaperHeader = {
   note: "",
 };
 
+const EMPTY_ARRAY = [];
+
 const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const navigate = useNavigate();
   const { id: routeTestId } = useParams();
@@ -172,8 +174,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const autoSaveErrorShownRef = useRef(false);
   const localStorageErrorShownRef = useRef(false);
   const selectedCourse = Form.useWatch("course", { form, preserve: true });
-  const selectedCourseValues = Form.useWatch("courseIds", { form, preserve: true }) || [];
-  const selectedBatchIds = Form.useWatch("batchIds", { form, preserve: true }) || [];
+  const selectedCourseValues = Form.useWatch("courseIds", { form, preserve: true }) || EMPTY_ARRAY;
+  const selectedBatchIds = Form.useWatch("batchIds", { form, preserve: true }) || EMPTY_ARRAY;
   const selectedQuestionLayout =
     Form.useWatch(["settings", "layout"], { form, preserve: true }) || "all_questions";
   const submittedDetailAttempts = useMemo(
@@ -411,16 +413,16 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     selectedCourse && typeof selectedCourse === "object"
       ? selectedCourse._id
       : selectedCourse;
-  const selectedCourseIds = [
-    ...new Set(
-      [
-        ...selectedCourseValues,
-        selectedCourseId,
-      ]
-        .map((id) => String(id || ""))
-        .filter(Boolean),
-    ),
-  ];
+  const selectedCourseIds = useMemo(
+    () => [
+      ...new Set(
+        [...selectedCourseValues, selectedCourseId]
+          .map((id) => String(id || ""))
+          .filter(Boolean),
+      ),
+    ],
+    [selectedCourseValues, selectedCourseId],
+  );
   const batches = useMemo(
     () =>
       selectedCourseIds.length
@@ -430,10 +432,14 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         : allAssignedBatches,
     [allAssignedBatches, selectedCourseIds],
   );
-  const selectedCourseRecords = selectedCourseIds.map(
-    (courseId) =>
-      options.find((course) => String(course._id) === courseId) ||
-      allAssignedBatches.find((batch) => String(batch.courseId || batch.course) === courseId),
+  const selectedCourseRecords = useMemo(
+    () =>
+      selectedCourseIds.map(
+        (courseId) =>
+          options.find((course) => String(course._id) === courseId) ||
+          allAssignedBatches.find((batch) => String(batch.courseId || batch.course) === courseId),
+      ),
+    [selectedCourseIds, options, allAssignedBatches],
   );
 
   const createScheduleWindow = (dayOffset = 0) => {
