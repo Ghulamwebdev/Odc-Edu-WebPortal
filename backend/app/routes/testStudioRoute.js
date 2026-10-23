@@ -10,6 +10,7 @@ import {
   getMyStudentTestReview,
   getTeacherPaperHeader,
   getQuestionBank,
+  getStudentTestHistory,
   getTeacherTestStudioOptions,
   getTestById,
   getTestAttempts,
@@ -43,6 +44,7 @@ router.post("/student/tests/:id/start", requireAuth, startMyStudentTest);
 router.post("/student/tests/:id/submit", requireAuth, submitMyStudentTest);
 
 router.get("/options", authorize("test_studio", "view"), getTeacherTestStudioOptions);
+router.get("/students/:studentId/history", authorize("test_studio", "view"), getStudentTestHistory);
 router.get("/paper-header", authorize("test_studio", "view"), getTeacherPaperHeader);
 router.put("/paper-header", authorize("test_studio", "update"), updateTeacherPaperHeader);
 router.post("/assignments/preview", authorize("test_studio", "view"), previewTestAssignment);

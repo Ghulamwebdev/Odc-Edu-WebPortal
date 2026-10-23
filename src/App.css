@@ -113,6 +113,37 @@
   max-width: 400px;
 }
 
+.student-result-confetti {
+  position: absolute;
+  top: -14px;
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0;
+  animation: student-result-confetti-fall 2.8s ease-in infinite;
+}
+
+@keyframes student-result-confetti-fall {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0) rotate(0deg);
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(20px, 330px, 0) rotate(540deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .student-result-confetti {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 .notification-content {
   display: flex;
   flex-direction: column;

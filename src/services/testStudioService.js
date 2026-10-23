@@ -36,6 +36,15 @@ export const getTestById = async (id) => {
   }
 };
 
+export const getStudentTestHistory = async (studentId) => {
+  try {
+    const response = await api.get(`/test-studio/students/${studentId}/history`);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { message: "Something went wrong" };
+  }
+};
+
 export const getTeacherPaperHeader = async () => {
   try {
     const response = await api.get("/test-studio/paper-header");

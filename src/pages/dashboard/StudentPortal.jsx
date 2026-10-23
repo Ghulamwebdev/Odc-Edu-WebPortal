@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Avatar,
   Button,
   Card,
   Checkbox,
+  Collapse,
   Descriptions,
   Dropdown,
   Empty,
@@ -21,16 +21,28 @@ import {
 } from "antd";
 import {
   BookOutlined,
+  CheckCircleFilled,
   EyeOutlined,
   LockOutlined,
   LogoutOutlined,
   SaveOutlined,
   SendOutlined,
-  UploadOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import { FaSearch, FaCog } from "react-icons/fa";
 import { TbArrowsMaximize } from "react-icons/tb";
+import {
+  Award,
+  Camera,
+  GraduationCap,
+  Mail,
+  MapPin,
+  PartyPopper,
+  ShieldCheck,
+  Sparkles,
+  UserRound,
+  Volume2,
+} from "lucide-react";
 import dayjs from "dayjs";
 import { getAdminInformation, updateAdminInfo } from "../../services/adminService";
 import {
@@ -40,7 +52,7 @@ import {
   submitMyStudentTest,
 } from "../../services/testStudioService";
 import useZustandStore from "../../stores/zustandStore";
-import { getSidebarLogo } from "../../utils/branding";
+import { getBrandLogo, getSchoolName, getSidebarLogo } from "../../utils/branding";
 
 const getProfileImageSrc = (profile) => {
   const rawProfile = String(profile || "").trim();
@@ -69,6 +81,10 @@ const StudentPortal = () => {
   const [securityWarningCount, setSecurityWarningCount] = useState(0);
   const [submittingTest, setSubmittingTest] = useState(false);
   const [nowTick, setNowTick] = useState(dayjs());
+  const [resultCelebration, setResultCelebration] = useState(null);
+  const [resultModalOpen, setResultModalOpen] = useState(false);
+  const [resultSecondsRemaining, setResultSecondsRemaining] = useState(0);
+  const [celebrationReplay, setCelebrationReplay] = useState(0);
   const activePaperRef = useRef(null);
   const submitTestRef = useRef(null);
   const securityWarningCountRef = useRef(0);
@@ -76,6 +92,7 @@ const StudentPortal = () => {
   const submissionInProgressRef = useRef(false);
   const user = adminInfo?.userData;
   const profileImage = getProfileImageSrc(user?.profile);
+  const studentName = user?.name || user?.studentInfo?.studentName || "Student";
 
   const assignedCourses = useMemo(() => user?.studentPortal?.courses || [], [user]);
   const assignedBatches = useMemo(() => user?.studentPortal?.batches || [], [user]);
@@ -84,7 +101,6 @@ const StudentPortal = () => {
     profileForm.setFieldsValue({
       name: user?.name,
       email: user?.email,
-      phone: user?.details?.phone || user?.studentInfo?.mobileNumber,
       city: user?.details?.city,
       address:
         user?.details?.address ||
@@ -134,7 +150,6 @@ const StudentPortal = () => {
       const formData = new FormData();
       formData.append("name", values.name || "");
       formData.append("email", values.email || user.email);
-      formData.append("phone", values.phone || "");
       formData.append("city", values.city || "");
       formData.append("address", values.address || "");
       const file = values.profile?.fileList?.[0]?.originFileObj;
@@ -179,6 +194,63 @@ const StudentPortal = () => {
     const seconds = totalSeconds % 60;
     return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
   };
+
+  const announceTestResult = (result) => {
+    if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance === "undefined") {
+      return false;
+    }
+
+    const positionText = result.position === 1
+      ? " You achieved first position. Amazing work!"
+      : result.position === 2
+        ? " You achieved second position. Excellent work!"
+        : result.position === 3
+          ? " You achieved third position. Well done!"
+          : "";
+    const announcement = result.passed
+      ? `Congratulations ${studentName}! You passed ${result.testTitle} with ${result.score} marks and ${result.percentage} percent.${positionText}`
+      : `${studentName}, you did not pass ${result.testTitle} this time. You scored ${result.score} marks and ${result.percentage} percent. Keep working hard, and best of luck on your next test.`;
+
+    window.speechSynthesis.cancel();
+    const utterance = new window.SpeechSynthesisUtterance(announcement);
+    utterance.rate = 0.92;
+    utterance.pitch = result.passed ? 1.08 : 0.96;
+    window.speechSynthesis.speak(utterance);
+    return true;
+  };
+
+  const showTestResult = (result) => {
+    const expiresAt = Date.now() + 120_000;
+    setResultCelebration({ ...result, expiresAt });
+    setResultSecondsRemaining(120);
+    setResultModalOpen(true);
+    setCelebrationReplay((count) => count + 1);
+    announceTestResult(result);
+  };
+
+  const replayTestResult = () => {
+    if (!resultCelebration) return;
+    showTestResult(resultCelebration);
+  };
+
+  useEffect(() => {
+    if (!resultModalOpen || !resultCelebration?.expiresAt) return undefined;
+
+    const updateCountdown = () => {
+      const secondsRemaining = Math.max(
+        0,
+        Math.ceil((resultCelebration.expiresAt - Date.now()) / 1000),
+      );
+      setResultSecondsRemaining(secondsRemaining);
+      if (secondsRemaining === 0) {
+        setResultModalOpen(false);
+        window.speechSynthesis?.cancel();
+      }
+    };
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(timer);
+  }, [resultModalOpen, resultCelebration?.expiresAt]);
 
   const startTest = async (test) => {
     try {
@@ -231,7 +303,7 @@ const StudentPortal = () => {
     }
   };
 
-  const submitTest = async (auto = false, autoSubmitReason = "time") => {
+  const submitTest = async (auto = false) => {
     if (!activePaper?._id || submissionInProgressRef.current) return;
     submissionInProgressRef.current = true;
     setSubmittingTest(true);
@@ -249,62 +321,37 @@ const StudentPortal = () => {
         })),
       };
       const response = await submitMyStudentTest(activePaper._id, payload);
-      message.success(
-        auto
-          ? autoSubmitReason === "security"
-            ? "Test auto-submitted after security violations."
-            : "Time ended. Test auto-submitted."
-          : "Test submitted successfully",
-      );
-      if (response.data?.resultVisible || activePaper.settings?.allowReview) {
-        Modal.info({
-          title: response.data?.resultVisible ? "Test Result" : "Test Submitted",
-          width: 640,
-          content: (
-            <div className="space-y-3">
-              {response.data?.resultVisible ? (
-                <p>
-                  Score: {response.data.score || 0} ({response.data.percentage || 0}%).{" "}
-                  {response.data.passed ? "Passed" : "Not passed"}
-                </p>
-              ) : (
-                <p>Your result will be available according to your teacher&apos;s result settings.</p>
-              )}
-              {activePaper.settings?.allowReview ? (
-                <div className="max-h-[50vh] space-y-3 overflow-y-auto">
-                  {(activePaper.questions || []).map((question, index) => {
-                    const answer = answers[question._id];
-                    const selectedOptions = Array.isArray(answer)
-                      ? answer
-                      : answer
-                        ? [answer]
-                        : [];
-                    const answerText = typeof answer === "string" &&
-                      !question.options?.some((option) => option._id === answer)
-                      ? answer
-                      : selectedOptions
-                          .map((optionId) =>
-                            question.options?.find((option) => option._id === optionId)?.text,
-                          )
-                          .filter(Boolean)
-                          .join(", ");
-                    return (
-                      <div key={question._id} className="rounded-lg border border-slate-200 p-3">
-                        <div className="font-semibold">
-                          Q{index + 1}. {question.questionText}
-                        </div>
-                        <div className="mt-1 text-sm text-slate-600">
-                          Your answer: {answerText || "No answer"}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          ),
-        });
-      }
+      const result = response.data || {};
+      const reviewQuestions = activePaper.settings?.allowReview
+        ? (activePaper.questions || []).map((question, index) => {
+            const answer = answers[question._id];
+            const selectedOptions = Array.isArray(answer) ? answer : answer ? [answer] : [];
+            const answerText = typeof answer === "string" &&
+              !question.options?.some((option) => option._id === answer)
+              ? answer
+              : selectedOptions
+                  .map((optionId) => question.options?.find((option) => option._id === optionId)?.text)
+                  .filter(Boolean)
+                  .join(", ");
+            return {
+              key: question._id || index,
+              question: question.questionText,
+              answer: answerText || "No answer",
+            };
+          })
+        : [];
+      showTestResult({
+        testTitle: activePaper.title,
+        score: Number(result.score || 0),
+        totalMarks: Number(result.totalMarks ?? activePaper.totalMarks ?? 0),
+        percentage: Number(result.percentage || 0),
+        passingMarks: Number(result.passingMarks ?? activePaper.passingMarks ?? 0),
+        passed: Boolean(result.passed),
+        position: result.position || null,
+        participantCount: Number(result.participantCount || 0),
+        status: result.status || (auto ? "auto_submitted" : "submitted"),
+        reviewQuestions,
+      });
       setActivePaper(null);
       setAnswers({});
       setActiveQuestionIndex(0);
@@ -499,74 +546,188 @@ const StudentPortal = () => {
     : [];
 
   const renderStudentInfo = () => (
-    <div className="space-y-5">
-      <div className="rounded-[16px] border border-slate-200 bg-white p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <UserOutlined className="text-primary" />
-          <h2 className="module-title !text-[20px]">Profile Information</h2>
-        </div>
-        <Form form={profileForm} layout="vertical" onFinish={saveProfile}>
-          <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
-            <Form.Item name="name" label="Full Name" rules={[{ required: true, message: "Name is required" }]}>
-              <Input className="form-input" />
-            </Form.Item>
-            <Form.Item name="email" label="Login Email">
-              <Input className="form-input" disabled />
-            </Form.Item>
-            <Form.Item name="phone" label="Phone">
-              <Input className="form-input" />
-            </Form.Item>
-            <Form.Item name="city" label="City">
-              <Input className="form-input" />
-            </Form.Item>
+    <div className="mx-auto w-full max-w-6xl space-y-6">
+      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-950 via-[#102d63] to-[#194c78] p-6 text-white shadow-lg md:p-8">
+        <div className="absolute -right-16 -top-24 h-72 w-72 rounded-full border-[36px] border-white/[0.04]" />
+        <div className="absolute -bottom-24 right-1/3 h-52 w-52 rounded-full bg-sky-300/[0.08] blur-2xl" />
+        <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center">
+          <div className="relative mx-auto sm:mx-0">
+            {profileImage ? (
+              <img
+                src={profileImage}
+                alt={user?.name || "Student profile"}
+                className="h-24 w-24 rounded-3xl border-4 border-white/80 object-cover shadow-xl md:h-28 md:w-28"
+              />
+            ) : (
+              <div className="flex h-24 w-24 items-center justify-center rounded-3xl border-4 border-white/80 bg-white/15 text-3xl font-bold shadow-xl md:h-28 md:w-28">
+                {String(user?.name || "ST")
+                  .split(/\s+/)
+                  .map((part) => part[0])
+                  .join("")
+                  .slice(0, 2)
+                  .toUpperCase()}
+              </div>
+            )}
+            <div className="absolute -bottom-2 -right-2 flex h-9 w-9 items-center justify-center rounded-full border-2 border-white bg-cyan-400 text-[#071a55] shadow-md">
+              <GraduationCap size={18} />
+            </div>
           </div>
-          <Form.Item name="address" label="Address">
-            <Input.TextArea rows={3} className="rounded-[10px]" />
-          </Form.Item>
-          <Form.Item name="profile" label="Profile Picture">
-            <Upload beforeUpload={() => false} maxCount={1} listType="picture">
-              <Button icon={<UploadOutlined />}>Select Picture</Button>
-            </Upload>
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={savingProfile} icon={<SaveOutlined />} className="h-10 !bg-primary !border-primary">
-            Save Profile
-          </Button>
-        </Form>
-      </div>
-
-      <div className="rounded-[16px] border border-slate-200 bg-white p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <LockOutlined className="text-primary" />
-          <h2 className="module-title !text-[20px]">Change Password</h2>
+          <div className="min-w-0 flex-1 text-center sm:text-left">
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-sky-100">
+              <ShieldCheck size={14} />
+              Student account
+            </div>
+            <h1 className="m-0 text-2xl font-bold text-white md:text-3xl">
+              {user?.name || "Student"}
+            </h1>
+            <p className="mb-0 mt-2 text-sm text-slate-200">
+              Manage your profile and account security
+            </p>
+            <div className="mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm text-slate-100 sm:justify-start">
+              {user?.email ? (
+                <span className="inline-flex items-center gap-2">
+                  <Mail size={15} />
+                  {user.email}
+                </span>
+              ) : null}
+              {user?.details?.city ? (
+                <span className="inline-flex items-center gap-2">
+                  <MapPin size={15} />
+                  {user.details.city}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="relative z-10 mx-auto flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl border border-white/70 bg-white p-3 shadow-xl sm:ml-auto sm:mr-0 md:h-24 md:w-24 md:p-4">
+            <img
+              src={getBrandLogo(appSettings)}
+              alt={getSchoolName(appSettings)}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
         </div>
-        <Form form={passwordForm} layout="vertical" onFinish={savePassword}>
-          <Form.Item
-            name="password"
-            label="New Password"
-            rules={[{ required: true, message: "Password is required" }, { min: 6, message: "Minimum 6 characters" }]}
-          >
-            <Input.Password className="form-input password-input" />
-          </Form.Item>
-          <Form.Item
-            name="confirmPassword"
-            label="Confirm Password"
-            dependencies={["password"]}
-            rules={[
-              { required: true, message: "Confirm password is required" },
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!value || getFieldValue("password") === value) return Promise.resolve();
-                  return Promise.reject(new Error("Passwords do not match"));
-                },
-              }),
-            ]}
-          >
-            <Input.Password className="form-input password-input" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={savingPassword} icon={<LockOutlined />} className="h-10 !bg-primary !border-primary">
-            Update Password
-          </Button>
-        </Form>
+      </section>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.9fr)]">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-7">
+          <div className="mb-6 flex items-start gap-3 border-b border-slate-100 pb-5">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
+              <UserRound size={20} />
+            </div>
+            <div>
+              <h2 className="m-0 text-lg font-bold text-slate-900">Profile information</h2>
+              <p className="mb-0 mt-1 text-sm text-slate-500">
+                Keep your account details up to date.
+              </p>
+            </div>
+          </div>
+          <Form form={profileForm} layout="vertical" onFinish={saveProfile}>
+            <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
+              <Form.Item
+                name="name"
+                label="Full name"
+                rules={[{ required: true, message: "Name is required" }]}
+              >
+                <Input className="form-input" prefix={<UserRound size={16} className="text-slate-400" />} />
+              </Form.Item>
+              <Form.Item name="email" label="Login email">
+                <Input
+                  className="form-input"
+                  prefix={<Mail size={16} className="text-slate-400" />}
+                  disabled
+                />
+              </Form.Item>
+              <Form.Item name="city" label="City">
+                <Input
+                  className="form-input"
+                  prefix={<MapPin size={16} className="text-slate-400" />}
+                  placeholder="Your city"
+                />
+              </Form.Item>
+              <Form.Item name="address" label="Address" className="md:col-span-2">
+                <Input.TextArea
+                  rows={3}
+                  className="rounded-xl"
+                  placeholder="Your address"
+                  maxLength={300}
+                  showCount
+                />
+              </Form.Item>
+            </div>
+            <Form.Item name="profile" label="Profile picture">
+              <Upload
+                beforeUpload={() => false}
+                maxCount={1}
+                listType="picture"
+                accept="image/*"
+              >
+                <Button icon={<Camera size={16} />}>Choose a profile picture</Button>
+              </Upload>
+            </Form.Item>
+            <div className="flex justify-end border-t border-slate-100 pt-4">
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={savingProfile}
+                icon={<SaveOutlined />}
+                className="h-10 !bg-primary !border-primary"
+              >
+                Save profile
+              </Button>
+            </div>
+          </Form>
+        </section>
+
+        <section className="h-fit rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-7">
+          <div className="mb-6 flex items-start gap-3 border-b border-slate-100 pb-5">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-700">
+              <LockOutlined />
+            </div>
+            <div>
+              <h2 className="m-0 text-lg font-bold text-slate-900">Change password</h2>
+              <p className="mb-0 mt-1 text-sm text-slate-500">
+                Use a strong password to protect your account.
+              </p>
+            </div>
+          </div>
+          <Form form={passwordForm} layout="vertical" onFinish={savePassword}>
+            <Form.Item
+              name="password"
+              label="New password"
+              rules={[
+                { required: true, message: "Password is required" },
+                { min: 6, message: "Minimum 6 characters" },
+              ]}
+            >
+              <Input.Password className="form-input password-input" />
+            </Form.Item>
+            <Form.Item
+              name="confirmPassword"
+              label="Confirm password"
+              dependencies={["password"]}
+              rules={[
+                { required: true, message: "Confirm password is required" },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    if (!value || getFieldValue("password") === value) return Promise.resolve();
+                    return Promise.reject(new Error("Passwords do not match"));
+                  },
+                }),
+              ]}
+            >
+              <Input.Password className="form-input password-input" />
+            </Form.Item>
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={savingPassword}
+              icon={<LockOutlined />}
+              className="h-10 !bg-primary !border-primary"
+            >
+              Update password
+            </Button>
+          </Form>
+        </section>
       </div>
     </div>
   );
@@ -1171,6 +1332,171 @@ const StudentPortal = () => {
           </div>
         </main>
       </div>
+
+      {resultCelebration && !resultModalOpen ? (
+        <Button
+          type="primary"
+          icon={<PartyPopper size={17} />}
+          className="fixed bottom-6 right-6 z-40 flex h-12 items-center rounded-full !bg-primary px-5 shadow-xl"
+          onClick={replayTestResult}
+        >
+          Show result again
+        </Button>
+      ) : null}
+
+      <Modal
+        open={resultModalOpen}
+        centered
+        width={560}
+        closable
+        maskClosable={false}
+        onCancel={() => {
+          setResultModalOpen(false);
+          window.speechSynthesis?.cancel();
+        }}
+        footer={[
+          <Button
+            key="audio"
+            icon={<Volume2 size={16} />}
+            onClick={() => {
+              if (!announceTestResult(resultCelebration)) {
+                message.info("Audio playback is not supported by this browser.");
+              }
+            }}
+          >
+            Play message
+          </Button>,
+          <Button
+            key="close"
+            type="primary"
+            className="!bg-primary !border-primary"
+            onClick={() => {
+              setResultModalOpen(false);
+              window.speechSynthesis?.cancel();
+            }}
+          >
+            Close
+          </Button>,
+        ]}
+        className="student-result-modal"
+      >
+        {resultCelebration ? (
+          <div
+            key={celebrationReplay}
+            className={`relative overflow-hidden rounded-2xl px-5 py-8 text-center ${
+              resultCelebration.passed
+                ? "bg-gradient-to-br from-emerald-50 via-white to-cyan-50"
+                : "bg-gradient-to-br from-amber-50 via-white to-orange-50"
+            }`}
+          >
+            {resultCelebration.position && resultCelebration.position <= 3 ? (
+              <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+                {Array.from({ length: 32 }, (_, index) => (
+                  <span
+                    key={index}
+                    className="student-result-confetti"
+                    style={{
+                      left: `${(index * 37) % 100}%`,
+                      animationDelay: `${(index % 12) * -0.22}s`,
+                      backgroundColor: ["#f59e0b", "#10b981", "#3b82f6", "#ec4899", "#8b5cf6"][index % 5],
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+            <div className="relative z-10 mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-white shadow-lg ring-8 ring-white/70">
+              {resultCelebration.position && resultCelebration.position <= 3 ? (
+                <Award size={40} className="text-amber-500" />
+              ) : resultCelebration.passed ? (
+                <CheckCircleFilled className="!text-[42px] !text-emerald-500" />
+              ) : (
+                <GraduationCap size={42} className="text-amber-600" />
+              )}
+            </div>
+            <div className="relative z-10 mt-5">
+              <div className={`text-xs font-bold uppercase tracking-[0.2em] ${
+                resultCelebration.passed ? "text-emerald-700" : "text-amber-700"
+              }`}>
+                {resultCelebration.passed ? "Test completed" : "Keep learning"}
+              </div>
+              <h2 className="mb-0 mt-2 text-2xl font-extrabold text-slate-900">
+                {resultCelebration.position && resultCelebration.position <= 3
+                  ? `Congratulations, ${studentName}!`
+                  : resultCelebration.passed
+                    ? `Well done, ${studentName}!`
+                    : `Keep going, ${studentName}!`}
+              </h2>
+              {resultCelebration.passed ? (
+                <div className="mt-2 flex justify-center text-amber-500">
+                  <Sparkles size={20} />
+                </div>
+              ) : null}
+              <p className="mx-auto mb-0 mt-2 max-w-sm text-sm text-slate-600">
+                {resultCelebration.position && resultCelebration.position <= 3
+                  ? `You earned ${resultCelebration.position === 1 ? "1st" : resultCelebration.position === 2 ? "2nd" : "3rd"} place in ${resultCelebration.testTitle}.`
+                  : resultCelebration.passed
+                    ? `You passed ${resultCelebration.testTitle}. Keep up the great work!`
+                    : `You did not pass this time. Keep working hard, and best of luck on your next test.`}
+              </p>
+              <div className="mx-auto mt-6 grid max-w-sm grid-cols-2 gap-3">
+                <div className="rounded-xl border border-white bg-white/90 p-3 shadow-sm">
+                  <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Your score</div>
+                  <div className="mt-1 text-xl font-extrabold text-slate-900">
+                    {resultCelebration.score}
+                    <span className="ml-1 text-sm font-semibold text-slate-500">/ {resultCelebration.totalMarks}</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white bg-white/90 p-3 shadow-sm">
+                  <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Percentage</div>
+                  <div className="mt-1 text-xl font-extrabold text-slate-900">{resultCelebration.percentage}%</div>
+                </div>
+                <div className="col-span-2 rounded-xl border border-white bg-white/90 p-3 shadow-sm">
+                  <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Passing marks</div>
+                  <div className="mt-1 text-sm font-bold text-slate-800">
+                    {resultCelebration.passingMarks} marks required
+                  </div>
+                </div>
+              </div>
+              <div className="relative z-10 mt-4">
+                <Tag color={resultCelebration.passed ? "success" : "error"} className="rounded-full px-4 py-1 text-sm font-semibold">
+                  {resultCelebration.passed ? "PASSED" : "NOT PASSED"}
+                </Tag>
+                {resultCelebration.position && resultCelebration.position <= 3 ? (
+                  <Tag color="gold" className="rounded-full px-4 py-1 text-sm font-semibold">
+                    {resultCelebration.position === 1 ? "1ST PLACE" : resultCelebration.position === 2 ? "2ND PLACE" : "3RD PLACE"}
+                  </Tag>
+                ) : null}
+              </div>
+              {resultCelebration.reviewQuestions?.length ? (
+                <Collapse
+                  className="relative z-10 mt-5 text-left"
+                  items={[
+                    {
+                      key: "review",
+                      label: "Review your submitted answers",
+                      children: (
+                        <div className="max-h-48 space-y-3 overflow-y-auto">
+                          {resultCelebration.reviewQuestions.map((question, index) => (
+                            <div key={question.key} className="rounded-lg border border-slate-200 bg-white p-3">
+                              <div className="text-sm font-semibold text-slate-800">
+                                Q{index + 1}. {question.question}
+                              </div>
+                              <div className="mt-1 text-sm text-slate-600">Your answer: {question.answer}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              ) : null}
+              <div className="relative z-10 mt-5 text-xs text-slate-500">
+                This result closes in <strong>{formatDuration(resultSecondsRemaining * 1000)}</strong>.
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         title="Course Information"

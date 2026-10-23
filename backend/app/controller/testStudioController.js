@@ -231,7 +231,8 @@ const serializeStudentTest = (test, attempt = null, now = new Date(), attemptsUs
             ? {
                 score: attempt.score,
                 percentage: attempt.percentage,
-                passed: attempt.passed,
+                passed: ["submitted", "auto_submitted", "graded"].includes(attempt.status) &&
+                  Number(attempt.score || 0) >= Number(plain.passingMarks || 0),
               }
             : {}),
         }
@@ -328,10 +329,7 @@ const buildTestPayload = (body = {}, currentTest = null) => {
     questions,
     totalMarks: Number(body.totalMarks || computedTotalMarks || 0),
     passingMarks: Number(body.passingMarks || 0),
-    passingPercentage:
-      body.passingPercentage === "" || body.passingPercentage === undefined
-        ? null
-        : Number(body.passingPercentage),
+    passingPercentage: null,
     negativeMarking: {
       enabled: Boolean(body.negativeMarking?.enabled),
       value: Number(body.negativeMarking?.value || 0),
@@ -666,7 +664,8 @@ export const getMyStudentTestReview = async (req, res) => {
           ? {
               score: attempt.score,
               percentage: attempt.percentage,
-              passed: attempt.passed,
+              passed: ["submitted", "auto_submitted", "graded"].includes(attempt.status) &&
+                Number(attempt.score || 0) >= Number(plain.passingMarks || 0),
             }
           : {}),
         questions,
@@ -822,24 +821,31 @@ export const submitMyStudentTest = async (req, res) => {
       : "submitted";
     await attempt.save();
 
-    const resultVisibility = test.settings?.resultVisibility || "after_publish";
-    const resultVisible =
-      resultVisibility === "immediate" ||
-      (resultVisibility === "after_publish" && Boolean(test.resultsPublished));
+    const completedAttempts = await TestAttempt.find({
+      test: test._id,
+      status: { $in: ["submitted", "auto_submitted", "graded"] },
+    })
+      .select("_id score percentage submittedAt")
+      .sort({ score: -1, percentage: -1, submittedAt: 1, _id: 1 })
+      .lean();
+    const position = completedAttempts.findIndex(
+      (completedAttempt) => String(completedAttempt._id) === String(attempt._id),
+    ) + 1;
+
     res.status(200).json({
       success: true,
       message: "Test submitted successfully",
       data: {
         attemptId: attempt._id,
         status: attempt.status,
-        resultVisible,
-        ...(resultVisible
-          ? {
-              score: attempt.score,
-              percentage: attempt.percentage,
-              passed: attempt.passed,
-            }
-          : {}),
+        resultVisible: true,
+        score: attempt.score,
+        percentage: attempt.percentage,
+        passed: Number(attempt.score || 0) >= Number(test.passingMarks || 0),
+        passingMarks: Number(test.passingMarks || 0),
+        totalMarks: Number(test.totalMarks || 0),
+        position: position || null,
+        participantCount: completedAttempts.length,
       },
     });
   } catch (error) {
@@ -971,9 +977,122 @@ export const getTestAttempts = async (req, res) => {
         submittedAt: attempt.submittedAt,
         score: attempt.score,
         percentage: attempt.percentage,
-        passed: attempt.passed,
+        passed: ["submitted", "auto_submitted", "graded"].includes(attempt.status) &&
+          Number(attempt.score || 0) >= Number(test.passingMarks || 0),
         answers: attempt.answers,
       })),
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+export const getStudentTestHistory = async (req, res) => {
+  try {
+    const student = await Admission.findById(req.params.studentId)
+      .select("studentName registrationNo")
+      .lean();
+    if (!student) return res.status(404).json({ success: false, message: "Student not found." });
+
+    const accessibleCourseIds = (await getAssignedCourseIds(req)).map(String);
+    const enrollments = await Enrollment.find({
+      student: student._id,
+      status: { $in: ["Active", "Completed", "On Hold"] },
+      course: { $in: accessibleCourseIds },
+    })
+      .populate("course", "courseId courseName")
+      .populate("batch", "batchName batchCode")
+      .lean();
+    const accessibleEnrollments = enrollments.filter((enrollment) => enrollment.batch?._id);
+    if (!accessibleEnrollments.length) {
+      return res.status(403).json({
+        success: false,
+        message: "This student has no enrollment in your assigned courses.",
+      });
+    }
+
+    const batchesById = new Map(
+      accessibleEnrollments.map((enrollment) => [
+        String(enrollment.batch._id),
+        { batch: enrollment.batch, course: enrollment.course },
+      ]),
+    );
+    const tests = await Test.find({
+      isDeleted: false,
+      status: { $nin: ["draft", "cancelled"] },
+      "assignedBatches.batch": { $in: Array.from(batchesById.keys()) },
+      $or: [
+        { courses: { $in: accessibleCourseIds } },
+        { course: { $in: accessibleCourseIds } },
+      ],
+      "excludedStudents.student": { $ne: student._id },
+      ...(!(req.currentUser?.isSuperAdmin || req.user?.isSuperAdmin)
+        ? { teacherUser: getUserId(req) }
+        : {}),
+    })
+      .populate("course", "courseId courseName")
+      .sort({ "schedule.startAt": -1, createdAt: -1 })
+      .lean();
+
+    const attempts = tests.length
+      ? await TestAttempt.find({
+          student: student._id,
+          test: { $in: tests.map((test) => test._id) },
+        }).lean()
+      : [];
+    const attemptByTestId = new Map(attempts.map((attempt) => [String(attempt.test), attempt]));
+
+    const testHistory = tests.map((test) => {
+      const assignedBatch = (test.assignedBatches || []).find((item) =>
+        batchesById.has(String(item.batch)),
+      );
+      const enrollmentDetails = assignedBatch
+        ? batchesById.get(String(assignedBatch.batch))
+        : null;
+      const attempt = attemptByTestId.get(String(test._id));
+      const answerSummary = (attempt?.answers || []).reduce(
+        (summary, answer) => {
+          const answered =
+            (answer.selectedOptions || []).length > 0 ||
+            Boolean(String(answer.textAnswer || "").trim());
+          if (!answered) return summary;
+          summary.answered += 1;
+          if (answer.isCorrect === true) summary.right += 1;
+          else if (answer.autoGraded !== false) summary.wrong += 1;
+          else summary.needsReview += 1;
+          return summary;
+        },
+        { answered: 0, right: 0, wrong: 0, needsReview: 0 },
+      );
+
+      return {
+        testId: test._id,
+        title: test.title,
+        topic: test.topic,
+        testStatus: computeLifecycleStatus(test),
+        course: test.course || enrollmentDetails?.course || null,
+        batch: enrollmentDetails?.batch || null,
+        status: attempt?.status || "not_started",
+        score: Number(attempt?.score || 0),
+        percentage: Number(attempt?.percentage || 0),
+        passed: Boolean(attempt && ["submitted", "auto_submitted", "graded"].includes(attempt.status)) &&
+          Number(attempt?.score || 0) >= Number(test.passingMarks || 0),
+        totalMarks: Number(test.totalMarks || 0),
+        passingMarks: Number(test.passingMarks || 0),
+        passingPercentage: null,
+        questionCount: test.questions?.length || 0,
+        attemptsUsed: Number(attempt?.attemptsUsed || 0),
+        answerSummary,
+        startAt: test.schedule?.startAt || null,
+        endAt: test.schedule?.endAt || null,
+        startedAt: attempt?.startedAt || null,
+        submittedAt: attempt?.submittedAt || null,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: { student, tests: testHistory },
     });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message });
@@ -1275,12 +1394,17 @@ export const deleteTest = async (req, res) => {
   try {
     const test = await Test.findOne({ _id: req.params.id, isDeleted: false });
     if (!test) return res.status(404).json({ success: false, message: "Test not found" });
-    if (test.status !== "draft") return res.status(400).json({ success: false, message: "Only draft tests can be deleted." });
     await assertCourseAccess(req, test.course);
+    if (
+      !(req.currentUser?.isSuperAdmin || req.user?.isSuperAdmin) &&
+      String(test.teacherUser) !== String(getUserId(req))
+    ) {
+      return res.status(403).json({ success: false, message: "You can only delete your own tests." });
+    }
     test.isDeleted = true;
     await test.save();
-    await createAudit(test, req, "deleted");
-    res.status(200).json({ success: true, message: "Draft test deleted" });
+    await createAudit(test, req, "deleted", null, null, "Test removed from Test Studio");
+    res.status(200).json({ success: true, message: "Test deleted" });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }

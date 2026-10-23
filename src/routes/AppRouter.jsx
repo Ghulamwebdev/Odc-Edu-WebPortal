@@ -32,6 +32,7 @@ import Teachers from "../pages/dashboard/Teachers";
 import EmployeeManagement from "../pages/dashboard/EmployeeManagement";
 import EmployeeDashboard from "../pages/dashboard/EmployeeDashboard";
 import TestStudio from "../pages/dashboard/TestStudio";
+import StudentTestHistory from "../pages/dashboard/StudentTestHistory";
 import TestPaperHeader from "../pages/dashboard/TestPaperHeader";
 import Students from "../pages/dashboard/Students";
 import EnrollmentManagement from "../pages/dashboard/EnrollmentManagement";
@@ -96,6 +97,7 @@ function AppRouter() {
           <Route path="employee-accounts" element={<ProtectedRoute superAdminOnly><EmployeeManagement /></ProtectedRoute>} />
           <Route path="test-studio" element={<ProtectedRoute moduleKey="test_studio"><TestStudio /></ProtectedRoute>} />
           <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio"><TestStudio setupMode /></ProtectedRoute>} />
+          <Route path="test-studio/student/:studentId" element={<ProtectedRoute moduleKey="test_studio"><StudentTestHistory /></ProtectedRoute>} />
           <Route path="test-studio/:id" element={<ProtectedRoute moduleKey="test_studio"><TestStudio detailMode /></ProtectedRoute>} />
           <Route path="teachers" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
           <Route
@@ -169,6 +171,7 @@ function AppRouter() {
           <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
           <Route path="test-studio" element={<TestStudio />} />
           <Route path="test-studio/create" element={<TestStudio setupMode />} />
+          <Route path="test-studio/student/:studentId" element={<StudentTestHistory />} />
           <Route path="test-studio/:id" element={<TestStudio detailMode />} />
           <Route path="test-paper-header" element={<TestPaperHeader />} />
         </Route>

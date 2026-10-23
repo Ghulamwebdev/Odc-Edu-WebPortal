@@ -23,24 +23,40 @@ import {
   message,
 } from "antd";
 import {
+  CheckCircleFilled,
+  CrownOutlined,
   CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
   FileExcelOutlined,
+  EyeOutlined,
   PlusOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
+  ShareAltOutlined,
   SendOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import jsPDF from "jspdf";
 import * as XLSX from "xlsx";
-import { ClipboardList, Clock, FileQuestion, Users } from "lucide-react";
+import {
+  Facebook,
+  Instagram,
+  Linkedin,
+  Medal,
+  Trophy,
+  Users,
+  Youtube,
+  ClipboardList,
+  Clock,
+  FileQuestion,
+} from "lucide-react";
 import { useModulePermissions } from "../../hooks/usePermissions";
 import useZustandStore from "../../stores/zustandStore";
+import { getBrandLogo, getSchoolName } from "../../utils/branding";
 import {
   createTest,
   deleteTest,
@@ -109,6 +125,32 @@ const statusColors = {
   cancelled: "red",
 };
 
+const allAssignedBatchesValue = "all_assigned_batches";
+
+const positionCardStyles = [
+  {
+    label: "1st Place",
+    icon: CrownOutlined,
+    card: "border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-white shadow-amber-100",
+    badge: "bg-amber-400 text-amber-950 ring-amber-200",
+    accent: "text-amber-700",
+  },
+  {
+    label: "2nd Place",
+    icon: Medal,
+    card: "border-slate-300 bg-gradient-to-br from-slate-100 via-gray-50 to-white shadow-slate-100",
+    badge: "bg-slate-300 text-slate-800 ring-slate-200",
+    accent: "text-slate-600",
+  },
+  {
+    label: "3rd Place",
+    icon: Trophy,
+    card: "border-orange-200 bg-gradient-to-br from-orange-50 via-amber-50 to-white shadow-orange-100",
+    badge: "bg-orange-300 text-orange-950 ring-orange-200",
+    accent: "text-orange-700",
+  },
+];
+
 const defaultPaperHeader = {
   logo: "",
   logoText: "",
@@ -125,6 +167,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const { id: routeTestId } = useParams();
   const permissions = useModulePermissions("test_studio");
   const adminInfo = useZustandStore((state) => state.adminInfo);
+  const appSettings = useZustandStore((state) => state.appSettings);
   const employeeMode =
     String(adminInfo?.userData?.role || "").toLowerCase() === "employee";
   const canCreateTest = employeeMode || permissions.create;
@@ -151,11 +194,20 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [detailAttempts, setDetailAttempts] = useState([]);
   const [detailAttemptsLoading, setDetailAttemptsLoading] = useState(false);
   const [detailFilters, setDetailFilters] = useState({
-    batchId: "all",
+    batchIds: [],
     result: "all",
     answerResult: "all",
     search: "",
   });
+  const [shareForm] = Form.useForm();
+  const [shareAttempt, setShareAttempt] = useState(null);
+  const [sharePosition, setSharePosition] = useState(1);
+  const [shareStep, setShareStep] = useState("details");
+  const [sharePhotoList, setSharePhotoList] = useState([]);
+  const [sharePlatforms, setSharePlatforms] = useState([]);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareCompleteOpen, setShareCompleteOpen] = useState(false);
+  const [shareCompletePlatforms, setShareCompletePlatforms] = useState([]);
   const [localRecoveryDraft, setLocalRecoveryDraft] = useState(null);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassigning, setReassigning] = useState(false);
@@ -190,6 +242,17 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         return new Date(left.submittedAt || 0) - new Date(right.submittedAt || 0);
       }),
     [submittedDetailAttempts],
+  );
+  const rankedPositionHolderAttempts = useMemo(
+    () =>
+      rankedDetailAttempts.filter((attempt) => {
+        if (!detailFilters.batchIds.length || detailFilters.batchIds.includes(allAssignedBatchesValue)) {
+          return true;
+        }
+        const batchId = String(attempt.batch?._id || attempt.batch || "");
+        return detailFilters.batchIds.includes(batchId);
+      }),
+    [detailFilters.batchIds, rankedDetailAttempts],
   );
   const positionByAttemptId = useMemo(
     () => new Map(rankedDetailAttempts.slice(0, 3).map((attempt, index) => [String(attempt._id), index + 1])),
@@ -275,7 +338,9 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         .toLowerCase();
 
       return (
-        (detailFilters.batchId === "all" || batchId === detailFilters.batchId) &&
+        (!detailFilters.batchIds.length ||
+          detailFilters.batchIds.includes(allAssignedBatchesValue) ||
+          detailFilters.batchIds.includes(batchId)) &&
         matchesResult &&
         matchesAnswerResult &&
         (!keyword || searchValue.includes(keyword))
@@ -324,7 +389,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   useEffect(() => {
     if (!detailMode || !routeTestId) return;
 
-    setDetailFilters({ batchId: "all", result: "all", answerResult: "all", search: "" });
+    setDetailFilters({ batchIds: [], result: "all", answerResult: "all", search: "" });
     const loadDetailTest = async () => {
       setLoading(true);
       try {
@@ -599,6 +664,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
     return {
       ...values,
+      passingPercentage: null,
       courseIds: selectedCourseIds,
       sections,
       wizardStep: currentStep,
@@ -813,10 +879,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const handleDeleteTest = async (test) => {
     try {
       await deleteTest(test._id);
-      message.success("Draft deleted");
+      message.success("Test deleted");
       await loadData();
     } catch (error) {
-      message.error(error.message || "Failed to delete draft");
+      message.error(error.message || "Failed to delete test");
     }
   };
 
@@ -2111,10 +2177,55 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       { right: 0, wrong: 0, needsReview: 0 },
     );
 
+  const openWinnerShare = (attempt, position) => {
+    const studentName = attempt.student?.studentName || "Student";
+    setShareAttempt(attempt);
+    setSharePosition(position);
+    setShareStep("details");
+    setSharePhotoList([]);
+    setSharePlatforms([]);
+    shareForm.setFieldsValue({
+      title: `Congratulations, ${studentName}!`,
+      description: `${studentName} achieved ${positionCardStyles[position - 1]?.label || "a top position"} in ${detailTest?.title || "the test"} with a score of ${attempt.score || 0} / ${detailTest?.totalMarks || 0} (${attempt.percentage || 0}%).`,
+    });
+    setShareModalOpen(true);
+  };
+
+  const closeWinnerShare = () => {
+    setShareModalOpen(false);
+    setShareAttempt(null);
+    setSharePhotoList([]);
+    setSharePlatforms([]);
+  };
+
+  const continueToSharePlatforms = async () => {
+    try {
+      await shareForm.validateFields();
+      setShareStep("platforms");
+    } catch (error) {
+      if (!error?.errorFields) {
+        message.error(error.message || "Could not prepare the social post.");
+      }
+    }
+  };
+
+  const handleDemoShare = () => {
+    if (!sharePlatforms.length) {
+      message.warning("Select at least one social media platform.");
+      return;
+    }
+
+    setShareCompletePlatforms([...sharePlatforms]);
+    closeWinnerShare();
+    setShareCompleteOpen(true);
+  };
+
   const renderTestDetailsContent = () => {
     if (!detailTest) {
       return <Card loading={loading} className="rounded-2xl" />;
     }
+
+    const ShareModalPositionIcon = positionCardStyles[sharePosition - 1]?.icon || Trophy;
 
     return (
       <div className="space-y-4">
@@ -2155,25 +2266,226 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           <Card><Statistic title="Needs Review" value={detailPerformanceSummary.needsReview} /></Card>
         </div>
         <Card title="Position Holders">
-          {rankedDetailAttempts.length ? (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              {rankedDetailAttempts.slice(0, 3).map((attempt, index) => (
-                <div key={attempt._id} className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <div className="text-xs font-bold uppercase tracking-wide text-amber-800">
-                    {index === 0 ? "1st Place" : index === 1 ? "2nd Place" : "3rd Place"}
-                  </div>
-                  <div className="mt-1 font-semibold text-primary">{attempt.student?.studentName || "Student"}</div>
-                  <div className="text-sm text-slate-600">
-                    {attempt.score || 0} / {detailTest.totalMarks || 0} ({attempt.percentage || 0}%)
-                  </div>
-                  <div className="text-xs text-slate-500">{attempt.batch?.batchName || "N/A"}</div>
-                </div>
-              ))}
+          {rankedPositionHolderAttempts.length ? (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+              {rankedPositionHolderAttempts.slice(0, 3).map((attempt, index) => {
+                const position = index + 1;
+                const style = positionCardStyles[index];
+                const PositionIcon = style.icon;
+                return (
+                    <div
+                      key={attempt._id}
+                      className={`relative overflow-hidden rounded-2xl border p-5 shadow-md transition duration-200 hover:-translate-y-1 hover:shadow-lg ${style.card}`}
+                    >
+                      <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-white/50" />
+                      <div className="relative flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-2xl shadow-sm ring-4 ${style.badge}`}>
+                            <PositionIcon />
+                          </div>
+                          <div>
+                            <div className={`text-xs font-extrabold uppercase tracking-[0.16em] ${style.accent}`}>
+                              {style.label}
+                            </div>
+                            <div className="mt-1 text-lg font-bold text-slate-900">
+                              {attempt.student?.studentName || "Student"}
+                            </div>
+                            {attempt.student?.registrationNo ? (
+                              <div className="text-xs text-slate-500">
+                                Reg. {attempt.student.registrationNo}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-white/80 bg-white/85 p-1.5 shadow-sm">
+                          <img
+                            src={getBrandLogo(appSettings)}
+                            alt={getSchoolName(appSettings)}
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
+                      </div>
+                      <div className="relative mt-5 flex items-end justify-between gap-3 border-t border-slate-900/10 pt-4">
+                        <div>
+                          <div className="text-2xl font-extrabold leading-tight text-slate-900">
+                            {attempt.score || 0}
+                            <span className="ml-1 text-sm font-semibold text-slate-500">
+                              / {detailTest.totalMarks || 0}
+                            </span>
+                          </div>
+                          <div className={`mt-1 text-sm font-semibold ${style.accent}`}>
+                            {attempt.percentage || 0}% score
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {attempt.batch?.batchName || "N/A"}
+                          </div>
+                        </div>
+                        <Button
+                          type="primary"
+                          ghost
+                          icon={<ShareAltOutlined />}
+                          onClick={() => openWinnerShare(attempt, position)}
+                        >
+                          Share
+                        </Button>
+                      </div>
+                    </div>
+                );
+              })}
             </div>
           ) : (
             <Empty description="Position holders appear after students submit the test" />
           )}
         </Card>
+        <Modal
+          title={shareStep === "details" ? "Create student achievement post" : "Choose social platforms"}
+          open={shareModalOpen}
+          onCancel={closeWinnerShare}
+          footer={
+            shareStep === "details" ? (
+              <Space>
+                <Button onClick={closeWinnerShare}>Cancel</Button>
+                <Button type="primary" onClick={continueToSharePlatforms}>
+                  Continue to platforms
+                </Button>
+              </Space>
+            ) : (
+              <Space>
+                <Button onClick={() => setShareStep("details")}>Back</Button>
+                <Button onClick={closeWinnerShare}>Cancel</Button>
+                <Button type="primary" icon={<ShareAltOutlined />} onClick={handleDemoShare}>
+                  Share
+                </Button>
+              </Space>
+            )
+          }
+          destroyOnClose
+        >
+          {shareAttempt ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className={`flex h-11 w-11 items-center justify-center rounded-xl text-xl ${positionCardStyles[sharePosition - 1]?.badge || ""}`}>
+                  <ShareModalPositionIcon />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-900">
+                    {shareAttempt.student?.studentName || "Student"}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {positionCardStyles[sharePosition - 1]?.label} · {detailTest.title}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Score: {shareAttempt.score || 0} / {detailTest.totalMarks || 0} ({shareAttempt.percentage || 0}%) · {shareAttempt.batch?.batchName || "N/A"}
+                  </div>
+                </div>
+                <img
+                  src={getBrandLogo(appSettings)}
+                  alt={getSchoolName(appSettings)}
+                  className="h-12 w-12 rounded-lg border border-white bg-white p-1 object-contain shadow-sm"
+                />
+              </div>
+              {shareStep === "details" ? (
+                <>
+                  <Form form={shareForm} layout="vertical">
+                    <Form.Item
+                      name="title"
+                      label="Post title"
+                      rules={[{ required: true, whitespace: true, message: "Enter a post title." }]}
+                    >
+                      <Input maxLength={120} showCount placeholder="Celebrate this achievement" />
+                    </Form.Item>
+                    <Form.Item name="description" label="Description">
+                      <Input.TextArea
+                        rows={4}
+                        maxLength={1000}
+                        showCount
+                        placeholder="Add more information about this achievement"
+                      />
+                    </Form.Item>
+                    <Form.Item label="Photos">
+                      <Upload
+                        accept="image/*"
+                        listType="picture-card"
+                        multiple
+                        fileList={sharePhotoList}
+                        beforeUpload={() => false}
+                        onChange={({ fileList }) => setSharePhotoList(fileList)}
+                      >
+                        <div className="flex flex-col items-center gap-1 text-slate-500">
+                          <PlusOutlined />
+                          <span className="text-xs">Add photos</span>
+                        </div>
+                      </Upload>
+                    </Form.Item>
+                  </Form>
+                  <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                    Photos and post details are prepared in this demo only; they are not uploaded or published.
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <div className="mb-3 text-sm text-slate-600">
+                    Select one or more platforms for this post.
+                  </div>
+                  <Checkbox.Group
+                    value={sharePlatforms}
+                    onChange={(platforms) => setSharePlatforms(platforms)}
+                    className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2"
+                  >
+                    <Checkbox value="Facebook" className="!m-0 rounded-xl border border-slate-200 p-3">
+                      <span className="ml-2 inline-flex items-center gap-2"><Facebook size={18} className="text-blue-600" /> Facebook</span>
+                    </Checkbox>
+                    <Checkbox value="Instagram" className="!m-0 rounded-xl border border-slate-200 p-3">
+                      <span className="ml-2 inline-flex items-center gap-2"><Instagram size={18} className="text-pink-600" /> Instagram</span>
+                    </Checkbox>
+                    <Checkbox value="LinkedIn" className="!m-0 rounded-xl border border-slate-200 p-3">
+                      <span className="ml-2 inline-flex items-center gap-2"><Linkedin size={18} className="text-sky-700" /> LinkedIn</span>
+                    </Checkbox>
+                    <Checkbox value="YouTube" className="!m-0 rounded-xl border border-slate-200 p-3">
+                      <span className="ml-2 inline-flex items-center gap-2"><Youtube size={18} className="text-red-600" /> YouTube</span>
+                    </Checkbox>
+                  </Checkbox.Group>
+                  <div className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Demo mode: selecting Share only confirms the selected platforms. Connect social accounts to enable real publishing.
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </Modal>
+        <Modal
+          open={shareCompleteOpen}
+          centered
+          width={460}
+          onCancel={() => setShareCompleteOpen(false)}
+          footer={
+            <Button type="primary" block onClick={() => setShareCompleteOpen(false)}>
+              Done
+            </Button>
+          }
+        >
+          <div className="px-2 pb-3 pt-5 text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 ring-8 ring-emerald-50/70">
+              <CheckCircleFilled className="text-4xl" />
+            </div>
+            <h3 className="mb-2 mt-6 text-xl font-bold text-slate-900">
+              Demo post prepared
+            </h3>
+            <p className="mx-auto max-w-sm text-sm leading-6 text-slate-600">
+              Your achievement post is ready for the selected platforms.
+            </p>
+            <div className="my-5 flex flex-wrap justify-center gap-2">
+              {shareCompletePlatforms.map((platform) => (
+                <Tag key={platform} color="blue" className="rounded-full px-3 py-1">
+                  {platform}
+                </Tag>
+              ))}
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-left text-xs leading-5 text-amber-800">
+              Social media accounts are not connected yet, so this post has not been published.
+            </div>
+          </div>
+        </Modal>
         <Card title="Assigned Batches">
           <div className="flex flex-wrap gap-2">
             {(detailTest.assignedBatches || []).map((item) => <Tag key={item.batch?._id || item.batch}>{item.batch?.batchName || item.batch}</Tag>)}
@@ -2223,16 +2535,37 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               className="md:max-w-xs"
             />
             <Select
-              value={detailFilters.batchId}
-              onChange={(batchId) => setDetailFilters((current) => ({ ...current, batchId }))}
+              mode="multiple"
+              allowClear
+              value={detailFilters.batchIds}
+              onChange={(batchIds) => {
+                const hasAllOption = batchIds.includes(allAssignedBatchesValue);
+                const hadAllOption = detailFilters.batchIds.includes(allAssignedBatchesValue);
+                const nextBatchIds = hasAllOption && !hadAllOption
+                  ? [allAssignedBatchesValue]
+                  : batchIds.filter((batchId) => batchId !== allAssignedBatchesValue);
+                setDetailFilters((current) => ({ ...current, batchIds: nextBatchIds }));
+              }}
+              placeholder="All assigned batches"
+              maxTagCount="responsive"
               className="md:min-w-52"
               options={[
-                { label: "All assigned batches", value: "all" },
+                { label: "All assigned batches", value: allAssignedBatchesValue },
                 ...(detailTest.assignedBatches || []).map((item) => ({
                   label: item.batch?.batchName || item.batchName || "Batch",
                   value: String(item.batch?._id || item.batch),
                 })),
               ]}
+              optionRender={(option) => (
+                <Checkbox
+                  checked={option.value === allAssignedBatchesValue
+                    ? !detailFilters.batchIds.length || detailFilters.batchIds.includes(allAssignedBatchesValue)
+                    : detailFilters.batchIds.includes(String(option.value))}
+                  style={{ pointerEvents: "none" }}
+                >
+                  {option.label}
+                </Checkbox>
+              )}
             />
             <Select
               value={detailFilters.result}
@@ -2315,6 +2648,24 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                     : <Tag color="orange">Remaining</Tag>,
               },
               { title: "Submitted", render: (_, attempt) => attempt.submittedAt ? dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A") : "Not submitted" },
+              {
+                title: "Actions",
+                render: (_, attempt) => {
+                  const studentId = attempt.student?._id || attempt.student;
+                  return (
+                    <Button
+                      size="small"
+                      icon={<EyeOutlined />}
+                      disabled={!studentId}
+                      onClick={() =>
+                        navigate(`${testStudioBasePath}/student/${studentId}?from=${detailTest._id}`)
+                      }
+                    >
+                      View
+                    </Button>
+                  );
+                },
+              },
             ]}
           />
         </Card>
@@ -2410,9 +2761,15 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               Reassign Remaining
             </Button>
           ) : null}
-          {canDeleteTest && test.status === "draft" ? (
-            <Popconfirm title="Delete draft test?" onConfirm={() => handleDeleteTest(test)}>
-              <Button size="small" danger icon={<DeleteOutlined />} />
+          {canDeleteTest ? (
+            <Popconfirm
+              title="Delete this test?"
+              description="It will be removed from Test Studio and students will no longer be able to access it."
+              okText="Delete test"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => handleDeleteTest(test)}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${test.title}`} />
             </Popconfirm>
           ) : null}
         </Space>

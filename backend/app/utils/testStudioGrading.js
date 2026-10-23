@@ -63,9 +63,7 @@ export const gradeTestAttempt = (test, submittedAnswers = []) => {
   const score = Math.max(0, answers.reduce((sum, answer) => sum + Number(answer.marksAwarded || 0), 0));
   const totalMarks = Number(test.totalMarks || 0);
   const percentage = totalMarks ? Math.round((score / totalMarks) * 10000) / 100 : 0;
-  const passed = test.passingPercentage !== null && test.passingPercentage !== undefined
-    ? percentage >= Number(test.passingPercentage || 0)
-    : score >= Number(test.passingMarks || 0);
+  const passed = score >= Number(test.passingMarks || 0);
 
   return { answers, score, percentage, passed };
 };
