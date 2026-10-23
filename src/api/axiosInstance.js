@@ -6,6 +6,12 @@ const getApiBaseUrl = () => {
   const envUrl = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL;
   
   if (envUrl) {
+    if (import.meta.env.PROD) {
+      const apiHost = new URL(envUrl, window.location.origin).hostname;
+      if (/^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$/i.test(apiHost)) {
+        throw new Error("Production API configuration must use a remote server URL.");
+      }
+    }
     return envUrl;
   }
 
