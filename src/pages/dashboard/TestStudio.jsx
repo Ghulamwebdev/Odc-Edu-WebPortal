@@ -41,6 +41,7 @@ import {
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import {
   Facebook,
@@ -125,6 +126,20 @@ const statusColors = {
   cancelled: "red",
 };
 
+const groupAttemptsByScore = (attempts) => {
+  const groups = [];
+  attempts.forEach((attempt) => {
+    const score = Number(attempt.score || 0);
+    const currentGroup = groups[groups.length - 1];
+    if (currentGroup?.score === score) {
+      currentGroup.attempts.push(attempt);
+    } else {
+      groups.push({ score, attempts: [attempt] });
+    }
+  });
+  return groups;
+};
+
 const allAssignedBatchesValue = "all_assigned_batches";
 
 const positionCardStyles = [
@@ -204,6 +219,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [shareForm] = Form.useForm();
   const [shareAttempt, setShareAttempt] = useState(null);
   const [sharePosition, setSharePosition] = useState(1);
+  const [positionDetails, setPositionDetails] = useState(null);
   const [shareStep, setShareStep] = useState("details");
   const [sharePhotoList, setSharePhotoList] = useState([]);
   const [sharePlatforms, setSharePlatforms] = useState([]);
@@ -256,9 +272,17 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       }),
     [detailFilters.batchIds, rankedDetailAttempts],
   );
+  const positionGroups = useMemo(
+    () => groupAttemptsByScore(rankedPositionHolderAttempts).slice(0, 3),
+    [rankedPositionHolderAttempts],
+  );
   const positionByAttemptId = useMemo(
-    () => new Map(rankedDetailAttempts.slice(0, 3).map((attempt, index) => [String(attempt._id), index + 1])),
-    [rankedDetailAttempts],
+    () => new Map(
+      groupAttemptsByScore(rankedPositionHolderAttempts)
+        .slice(0, 3)
+        .flatMap((group, index) => group.attempts.map((attempt) => [String(attempt._id), index + 1])),
+    ),
+    [rankedPositionHolderAttempts],
   );
   const detailPerformanceSummary = useMemo(() => {
     const answerTotals = submittedDetailAttempts.reduce(
@@ -1491,102 +1515,119 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
   const downloadTestResultsPdf = (test, attempts) => {
     try {
-      const doc = new jsPDF({ unit: "mm", format: "a4" });
-      const pageHeight = doc.internal.pageSize.getHeight();
-      const submitted = (attempts || [])
+      const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+      const filteredAttempts = attempts || [];
+      const submitted = filteredAttempts
         .filter((attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status))
         .sort((left, right) => Number(right.score || 0) - Number(left.score || 0));
-      const rankById = new Map(submitted.slice(0, 3).map((attempt, index) => [String(attempt._id), index + 1]));
-      const questionMap = new Map((test.questions || []).map((question) => [String(question._id), question]));
-      const totals = submitted.reduce(
-        (result, attempt) => {
-          result.passed += attempt.passed ? 1 : 0;
-          (attempt.answers || []).forEach((answer) => {
+      const answerSummary = (attempt) =>
+        (attempt.answers || []).reduce(
+          (result, answer) => {
             const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
             if (!answered) result.unanswered += 1;
             else if (answer.isCorrect === true) result.right += 1;
             else if (answer.autoGraded !== false) result.wrong += 1;
             else result.needsReview += 1;
-          });
+            return result;
+          },
+          { right: 0, wrong: 0, unanswered: 0, needsReview: 0 },
+        );
+      const totals = submitted.reduce(
+        (result, attempt) => {
+          result.passed += attempt.passed ? 1 : 0;
+          const counts = answerSummary(attempt);
+          result.right += counts.right;
+          result.wrong += counts.wrong;
+          result.unanswered += counts.unanswered;
+          result.needsReview += counts.needsReview;
           return result;
         },
         { passed: 0, right: 0, wrong: 0, unanswered: 0, needsReview: 0 },
       );
-      let y = 16;
-
-      const ensureSpace = (height = 12) => {
-        if (y + height <= pageHeight - 14) return;
-        doc.addPage();
-        y = 16;
-      };
-      const writeLine = (text, { bold = false, size = 10, indent = 14 } = {}) => {
-        doc.setFont("helvetica", bold ? "bold" : "normal");
-        doc.setFontSize(size);
-        const lines = doc.splitTextToSize(String(text || "-"), 182 - (indent - 14));
-        ensureSpace(lines.length * 5 + 2);
-        doc.text(lines, indent, y);
-        y += lines.length * 5 + 2;
-      };
-
-      writeLine(test.title || "Test Results", { bold: true, size: 16 });
       const courseNames = (test.courses || [])
         .map((course) => course?.courseName)
         .filter(Boolean);
-      writeLine(`Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`);
-      writeLine(`Assigned batches: ${(test.assignedBatches || []).map((item) => item.batch?.batchName || item.batchName || "Batch").join(", ") || "N/A"}`);
-      writeLine(`Report generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}`);
-      y += 2;
-      writeLine(
-        `Students: ${attempts.length}  |  Submitted: ${submitted.length}  |  Passed: ${totals.passed}  |  Failed: ${submitted.length - totals.passed}  |  Remaining: ${Math.max(0, Number(test.studentCount || 0) - submitted.length)}`,
-        { bold: true },
-      );
-      writeLine(`Right answers: ${totals.right}  |  Wrong answers: ${totals.wrong}  |  Unanswered: ${totals.unanswered}  |  Needs review: ${totals.needsReview}`);
-      writeLine(`Test marks: ${test.totalMarks || 0}  |  Passing marks: ${test.passingMarks || 0}`);
-      y += 3;
-
+      const selectedBatchNames = detailFilters.batchIds.includes(allAssignedBatchesValue)
+        ? "All assigned batches"
+        : detailFilters.batchIds.length
+        ? detailFilters.batchIds
+          .filter((batchId) => batchId !== allAssignedBatchesValue)
+          .map((batchId) => detailTest?.assignedBatches?.find(
+            (item) => String(item.batch?._id || item.batch) === batchId,
+          )?.batch?.batchName)
+          .filter(Boolean)
+          .join(", ")
+        : "All assigned batches";
+      const filterSummary = [
+        `Batch: ${selectedBatchNames || "Selected batches"}`,
+        `Result: ${detailFilters.result === "all" ? "All" : detailFilters.result.replaceAll("_", " ")}`,
+        `Answer filter: ${detailFilters.answerResult === "all" ? "All" : detailFilters.answerResult.replaceAll("_", " ")}`,
+        detailFilters.search.trim() ? `Search: ${detailFilters.search.trim()}` : null,
+      ].filter(Boolean).join(" | ");
       const sortedAttempts = [
         ...submitted,
-        ...(attempts || []).filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+        ...filteredAttempts.filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
       ];
-      sortedAttempts.forEach((attempt) => {
-        y += 2;
-        writeLine(
-          `${rankById.has(String(attempt._id)) ? `Position ${rankById.get(String(attempt._id))}: ` : ""}${attempt.student?.studentName || "Student"} (${attempt.student?.registrationNo || "No registration"})`,
-          { bold: true, size: 12 },
-        );
-        const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
-        writeLine(`Batch: ${attempt.batch?.batchName || "N/A"}  |  Status: ${attempt.status}  |  Score: ${attempt.score || 0}/${test.totalMarks || 0} (${attempt.percentage || 0}%)  |  Result: ${isSubmitted ? (attempt.passed ? "Passed" : "Not passed") : "Pending"}`);
-        if (attempt.submittedAt) writeLine(`Submitted: ${dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A")}`);
 
-        if (!attempt.answers?.length) {
-          writeLine("No submitted answers.");
-          return;
-        }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text(test.title || "Test Results", 14, 14);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text(
+        `Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`,
+        14,
+        21,
+      );
+      const filterLines = doc.splitTextToSize(
+        `Generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}  |  Filters: ${filterSummary}`,
+        265,
+      );
+      doc.text(filterLines, 14, 27);
+      const summaryY = 27 + filterLines.length * 4;
+      doc.text(
+        `Students in report: ${filteredAttempts.length}  |  Submitted: ${submitted.length}  |  Passed: ${totals.passed}  |  Failed: ${submitted.length - totals.passed}  |  Marks: ${test.totalMarks || 0}  |  Passing marks: ${test.passingMarks || 0}`,
+        14,
+        summaryY,
+        { maxWidth: 265 },
+      );
 
-        attempt.answers.forEach((answer, index) => {
-          const question = questionMap.get(String(answer.questionId));
-          const options = question?.options || [];
-          const optionText = (optionId) => {
-            const option = options.find((item, optionIndex) => String(item._id || optionIndex) === String(optionId));
-            return option?.text || optionId;
-          };
-          const selected = (answer.selectedOptions || []).map(optionText);
-          const correct = (question?.correctAnswers || []).map(optionText);
-          const answered = selected.length > 0 || Boolean(String(answer.textAnswer || "").trim());
-          const answerStatus = answer.isCorrect === true
-            ? "Right"
-            : !answered
-              ? "Unanswered"
-              : answer.autoGraded === false
-                ? "Needs review"
-                : "Wrong";
-
-          writeLine(`Q${index + 1}. ${question?.questionText || "Question"} [${answerStatus}; ${answer.marksAwarded || 0}/${question?.marks || 0} marks]`, { bold: true });
-          writeLine(`Student answer: ${selected.length ? selected.join(", ") : answer.textAnswer || "No answer"}`, { indent: 18, size: 9 });
-          writeLine(`Correct answer: ${correct.length ? correct.join(", ") : question?.modelAnswer || "N/A"}`, { indent: 18, size: 9 });
-        });
+      autoTable(doc, {
+        startY: summaryY + 6,
+        head: [["Position", "Student", "Registration", "Batch", "Status", "Score", "Percent", "Result", "Answer summary", "Submitted"]],
+        body: sortedAttempts.map((attempt) => {
+          const position = positionByAttemptId.get(String(attempt._id));
+          const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
+          const counts = answerSummary(attempt);
+          return [
+            position ? `${position}${position === 1 ? "st" : position === 2 ? "nd" : "rd"}` : "-",
+            attempt.student?.studentName || "Student",
+            attempt.student?.registrationNo || "N/A",
+            attempt.batch?.batchName || "N/A",
+            attempt.status || "N/A",
+            `${attempt.score || 0} / ${test.totalMarks || 0}`,
+            `${attempt.percentage || 0}%`,
+            isSubmitted ? (attempt.passed ? "Passed" : "Not passed") : "Pending",
+            isSubmitted
+              ? `${counts.right} right, ${counts.wrong} wrong, ${counts.unanswered} unanswered, ${counts.needsReview} review`
+              : "-",
+            attempt.submittedAt ? dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A") : "-",
+          ];
+        }),
+        theme: "striped",
+        styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak" },
+        headStyles: { fillColor: [1, 19, 76], textColor: [255, 255, 255], fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [245, 247, 250] },
+        margin: { left: 14, right: 14, bottom: 14 },
       });
-
+      const pageCount = doc.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        doc.setPage(page);
+        doc.setFontSize(8);
+        doc.setTextColor(120);
+        doc.text(`Page ${page} of ${pageCount}`, 283, 203, { align: "right" });
+        doc.setTextColor(0);
+      }
       const safeTitle = String(test.title || "test-results").replace(/[<>:"/\\|?*]+/g, "-").trim();
       doc.save(`${safeTitle || "test-results"}-results.pdf`);
       message.success("Test results PDF downloaded");
@@ -2129,6 +2170,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
 
   const openWinnerShare = (attempt, position) => {
     const studentName = attempt.student?.studentName || "Student";
+    setPositionDetails(null);
     setShareAttempt(attempt);
     setSharePosition(position);
     setShareStep("details");
@@ -2216,15 +2258,15 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           <Card><Statistic title="Needs Review" value={detailPerformanceSummary.needsReview} /></Card>
         </div>
         <Card title="Position Holders">
-          {rankedPositionHolderAttempts.length ? (
+          {positionGroups.length ? (
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              {rankedPositionHolderAttempts.slice(0, 3).map((attempt, index) => {
+              {positionGroups.map((group, index) => {
                 const position = index + 1;
                 const style = positionCardStyles[index];
                 const PositionIcon = style.icon;
                 return (
                     <div
-                      key={attempt._id}
+                      key={`${position}-${group.score}`}
                       className={`relative overflow-hidden rounded-2xl border p-5 shadow-md transition duration-200 hover:-translate-y-1 hover:shadow-lg ${style.card}`}
                     >
                       <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-white/50" />
@@ -2237,14 +2279,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                             <div className={`text-xs font-extrabold uppercase tracking-[0.16em] ${style.accent}`}>
                               {style.label}
                             </div>
-                            <div className="mt-1 text-lg font-bold text-slate-900">
-                              {attempt.student?.studentName || "Student"}
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {group.attempts.length} {group.attempts.length === 1 ? "student" : "students"}
+                              {group.attempts.length > 1 ? " tied" : ""}
                             </div>
-                            {attempt.student?.registrationNo ? (
-                              <div className="text-xs text-slate-500">
-                                Reg. {attempt.student.registrationNo}
-                              </div>
-                            ) : null}
                           </div>
                         </div>
                         <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-white/80 bg-white/85 p-1.5 shadow-sm">
@@ -2258,25 +2296,33 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                       <div className="relative mt-5 flex items-end justify-between gap-3 border-t border-slate-900/10 pt-4">
                         <div>
                           <div className="text-2xl font-extrabold leading-tight text-slate-900">
-                            {attempt.score || 0}
+                            {group.score}
                             <span className="ml-1 text-sm font-semibold text-slate-500">
                               / {detailTest.totalMarks || 0}
                             </span>
                           </div>
                           <div className={`mt-1 text-sm font-semibold ${style.accent}`}>
-                            {attempt.percentage || 0}% score
+                            {group.attempts[0]?.percentage || 0}% score
                           </div>
                           <div className="mt-1 text-xs text-slate-500">
-                            {attempt.batch?.batchName || "N/A"}
+                            {group.attempts.slice(0, 2).map((attempt) => (
+                              <div key={attempt._id}>
+                                {attempt.student?.studentName || "Student"}
+                                {attempt.student?.registrationNo ? ` · ${attempt.student.registrationNo}` : ""}
+                              </div>
+                            ))}
+                            {group.attempts.length > 2 ? (
+                              <div>+{group.attempts.length - 2} more</div>
+                            ) : null}
                           </div>
                         </div>
                         <Button
                           type="primary"
                           ghost
-                          icon={<ShareAltOutlined />}
-                          onClick={() => openWinnerShare(attempt, position)}
+                          icon={<EyeOutlined />}
+                          onClick={() => setPositionDetails({ position, attempts: group.attempts })}
                         >
-                          Share
+                          View {group.attempts.length}
                         </Button>
                       </div>
                     </div>
@@ -2287,6 +2333,45 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
             <Empty description="Position holders appear after students submit the test" />
           )}
         </Card>
+        <Modal
+          title={positionDetails ? `${positionCardStyles[positionDetails.position - 1]?.label} students` : "Position students"}
+          open={Boolean(positionDetails)}
+          onCancel={() => setPositionDetails(null)}
+          footer={null}
+          width={640}
+          destroyOnClose
+        >
+          <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
+            {(positionDetails?.attempts || []).map((attempt) => (
+              <div key={attempt._id} className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-slate-900">{attempt.student?.studentName || "Student"}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      Registration: {attempt.student?.registrationNo || "N/A"} · Batch: {attempt.batch?.batchName || "N/A"}
+                    </div>
+                    <div className="mt-2 text-sm font-semibold text-slate-700">
+                      {attempt.score || 0} / {detailTest.totalMarks || 0} marks · {attempt.percentage || 0}% · {attempt.passed ? "Passed" : "Not passed"}
+                    </div>
+                    {attempt.submittedAt ? (
+                      <div className="mt-1 text-xs text-slate-500">
+                        Submitted {dayjs(attempt.submittedAt).format("DD MMM YYYY, hh:mm A")}
+                      </div>
+                    ) : null}
+                  </div>
+                  <Button
+                    type="primary"
+                    ghost
+                    icon={<ShareAltOutlined />}
+                    onClick={() => openWinnerShare(attempt, positionDetails.position)}
+                  >
+                    Create share post
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Modal>
         <Modal
           title={shareStep === "details" ? "Create student achievement post" : "Choose social platforms"}
           open={shareModalOpen}
@@ -2457,7 +2542,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 <Button
                   size="small"
                   icon={<DownloadOutlined />}
-                  onClick={() => downloadTestResultsPdf(detailTest, detailAttempts)}
+                  onClick={() => downloadTestResultsPdf(detailTest, visibleDetailAttempts)}
                 >
                   Download Results PDF
                 </Button>
@@ -2469,7 +2554,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               <Button
                 size="small"
                 icon={<DownloadOutlined />}
-                onClick={() => downloadTestResultsPdf(detailTest, detailAttempts)}
+                onClick={() => downloadTestResultsPdf(detailTest, visibleDetailAttempts)}
               >
                 Download Results PDF
               </Button>
