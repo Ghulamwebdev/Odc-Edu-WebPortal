@@ -828,9 +828,15 @@ export const submitMyStudentTest = async (req, res) => {
       .select("_id score percentage submittedAt")
       .sort({ score: -1, percentage: -1, submittedAt: 1, _id: 1 })
       .lean();
-    const position = completedAttempts.findIndex(
-      (completedAttempt) => String(completedAttempt._id) === String(attempt._id),
-    ) + 1;
+    const passingAttempts = completedAttempts.filter(
+      (completedAttempt) => Number(completedAttempt.score || 0) >= Number(test.passingMarks || 0),
+    );
+    const passingPosition = grading.passed
+      ? passingAttempts.findIndex(
+          (completedAttempt) => String(completedAttempt._id) === String(attempt._id),
+        ) + 1
+      : 0;
+    const position = passingPosition > 0 && passingPosition <= 3 ? passingPosition : null;
 
     res.status(200).json({
       success: true,
@@ -841,7 +847,7 @@ export const submitMyStudentTest = async (req, res) => {
         resultVisible: true,
         score: attempt.score,
         percentage: attempt.percentage,
-        passed: Number(attempt.score || 0) >= Number(test.passingMarks || 0),
+        passed: grading.passed,
         passingMarks: Number(test.passingMarks || 0),
         totalMarks: Number(test.totalMarks || 0),
         position: position || null,

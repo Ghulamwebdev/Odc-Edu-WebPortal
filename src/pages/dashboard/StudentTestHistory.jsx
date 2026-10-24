@@ -40,7 +40,7 @@ const StudentTestHistory = () => {
     try {
       const response = await getStudentTestHistory(studentId);
       setStudent(response.data?.student || null);
-      setTests(response.data?.tests || []);
+      setTests((response.data?.tests || []).filter((test) => !test.isDeleted));
     } catch (error) {
       message.error(error.message || "Failed to load student test history.");
     } finally {
@@ -80,49 +80,55 @@ const StudentTestHistory = () => {
   const columns = [
     {
       title: "Test",
+      width: 145,
       render: (_, test) => (
-        <div>
+        <div className="min-w-0">
           <div className="font-semibold text-primary">{test.title}</div>
-          <div className="text-xs text-slate-500">{test.topic || "No topic"}</div>
+          {test.topic ? <div className="text-xs text-slate-500">{test.topic}</div> : null}
         </div>
       ),
     },
     {
       title: "Course / Batch",
+      width: 170,
       render: (_, test) => (
-        <div>
-          <div>{test.course?.courseName || "—"}</div>
+        <div className="min-w-0">
+          <div className="break-words">{test.course?.courseName || "—"}</div>
           <div className="text-xs text-slate-500">{test.batch?.batchName || "—"}</div>
         </div>
       ),
     },
     {
-      title: "Test status",
-      dataIndex: "testStatus",
-      render: (status) => <Tag color={status === "completed" ? "purple" : status === "live" ? "green" : "blue"}>{status}</Tag>,
-    },
-    {
-      title: "Student status",
-      dataIndex: "status",
-      render: getAttemptTag,
-    },
-    {
-      title: "Result",
-      render: (_, test) => {
-        if (!submittedStatuses.has(test.status)) return <Tag>Not evaluated</Tag>;
-        return (
-          <Tag color={test.passed ? "success" : "error"}>
-            {test.passed ? "Passed" : "Failed"}
+      title: "Status",
+      width: 125,
+      render: (_, test) => (
+        <div className="flex flex-col items-start gap-1">
+          <Tag color={test.testStatus === "completed" ? "purple" : test.testStatus === "live" ? "green" : "blue"}>
+            Test: {test.testStatus}
           </Tag>
+          {getAttemptTag(test.status)}
+        </div>
+      ),
+    },
+    {
+      title: "Result / Score",
+      width: 130,
+      render: (_, test) => {
+        return (
+          <div className="flex flex-col items-start gap-1">
+            {submittedStatuses.has(test.status) ? (
+              <Tag color={test.passed ? "success" : "error"}>
+                {test.passed ? "Passed" : "Failed"}
+              </Tag>
+            ) : <Tag>Not evaluated</Tag>}
+            <span>{test.score} / {test.totalMarks} ({test.percentage}%)</span>
+          </div>
         );
       },
     },
     {
-      title: "Score",
-      render: (_, test) => `${test.score} / ${test.totalMarks} (${test.percentage}%)`,
-    },
-    {
       title: "Answer summary",
+      width: 135,
       render: (_, test) => (
         <div className="flex flex-wrap gap-1">
           <Tag color="green">{test.answerSummary?.right || 0} right</Tag>
@@ -134,29 +140,29 @@ const StudentTestHistory = () => {
       ),
     },
     {
-      title: "Pass requirement",
-      render: (_, test) => `${test.passingMarks} marks`,
-    },
-    { title: "Questions", dataIndex: "questionCount" },
-    {
-      title: "Scheduled",
+      title: "Pass / Questions",
+      width: 110,
       render: (_, test) => (
         <div>
-          <div>{formatDate(test.startAt)}</div>
-          <div className="text-xs text-slate-500">Ends {formatDate(test.endAt)}</div>
+          <div>{test.passingMarks} marks to pass</div>
+          <div className="text-xs text-slate-500">{test.questionCount} questions</div>
         </div>
       ),
     },
     {
-      title: "Started",
-      render: (_, test) => formatDate(test.startedAt),
-    },
-    {
-      title: "Submitted",
-      render: (_, test) => formatDate(test.submittedAt),
+      title: "Timeline",
+      width: 185,
+      render: (_, test) => (
+        <div className="space-y-1 text-xs">
+          <div><span className="font-medium">Scheduled:</span> {formatDate(test.startAt)}</div>
+          <div><span className="font-medium">Started:</span> {formatDate(test.startedAt)}</div>
+          <div><span className="font-medium">Submitted:</span> {formatDate(test.submittedAt)}</div>
+        </div>
+      ),
     },
     {
       title: "Actions",
+      width: 95,
       render: (_, test) => (
         <Button
           size="small"
@@ -248,7 +254,7 @@ const StudentTestHistory = () => {
           loading={loading}
           columns={columns}
           dataSource={filteredTests}
-          scroll={{ x: "max-content" }}
+          tableLayout="fixed"
           pagination={{ pageSize: 20, showSizeChanger: true }}
           locale={{ emptyText: <Empty description="No assigned tests found for this student" /> }}
         />

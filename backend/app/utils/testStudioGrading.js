@@ -8,11 +8,14 @@ const sameSet = (left = [], right = []) => {
 };
 
 const getQuestionCorrectKeys = (question = {}) => {
-  const explicit = (question.correctAnswers || []).map(String).filter(Boolean);
-  if (explicit.length) return explicit;
-  return (question.options || [])
+  const correctOptions = (question.options || [])
     .map((option, index) => (option.isCorrect ? String(option._id || index) : null))
     .filter(Boolean);
+  if (correctOptions.length) return correctOptions;
+
+  const explicit = (question.correctAnswers || []).map(String).filter(Boolean);
+  if (explicit.length) return explicit;
+  return [];
 };
 
 const gradeSingleAnswer = (question = {}, answer = {}, negativeMarking = {}) => {

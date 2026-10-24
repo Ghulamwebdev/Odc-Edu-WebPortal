@@ -90,6 +90,7 @@ const StudentPortal = () => {
   const securityWarningCountRef = useRef(0);
   const autoSubmitTriggeredRef = useRef(false);
   const submissionInProgressRef = useRef(false);
+  const studentTestsRequestRef = useRef(false);
   const user = adminInfo?.userData;
   const profileImage = getProfileImageSrc(user?.profile);
   const studentName = user?.name || user?.studentInfo?.studentName || "Student";
@@ -114,23 +115,28 @@ const StudentPortal = () => {
     return () => window.clearInterval(timer);
   }, []);
 
-  const loadStudentTests = async () => {
-    setTestsLoading(true);
+  const loadStudentTests = useCallback(async (silent = false) => {
+    if (studentTestsRequestRef.current) return;
+    studentTestsRequestRef.current = true;
+    if (!silent) setTestsLoading(true);
     try {
       const response = await getMyStudentTests();
       setStudentTests(response.data || []);
     } catch (error) {
       message.error(error.message || "Failed to load tests");
     } finally {
-      setTestsLoading(false);
+      studentTestsRequestRef.current = false;
+      if (!silent) setTestsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (activeTab === "student-tests") {
-      loadStudentTests();
-    }
-  }, [activeTab]);
+    if (activeTab !== "student-tests" || activePaper) return undefined;
+
+    loadStudentTests();
+    const refreshTimer = window.setInterval(() => loadStudentTests(true), 10_000);
+    return () => window.clearInterval(refreshTimer);
+  }, [activePaper, activeTab, loadStudentTests]);
 
   const refreshProfile = async () => {
     if (!user?._id) return;
@@ -200,7 +206,9 @@ const StudentPortal = () => {
       return false;
     }
 
-    const positionText = result.position === 1
+    const positionText = !result.passed
+      ? ""
+      : result.position === 1
       ? " You achieved first position. Amazing work!"
       : result.position === 2
         ? " You achieved second position. Excellent work!"
@@ -209,7 +217,7 @@ const StudentPortal = () => {
           : "";
     const announcement = result.passed
       ? `Congratulations ${studentName}! You passed ${result.testTitle} with ${result.score} marks and ${result.percentage} percent.${positionText}`
-      : `${studentName}, you did not pass ${result.testTitle} this time. You scored ${result.score} marks and ${result.percentage} percent. Keep working hard, and best of luck on your next test.`;
+      : `Hard luck ${studentName}. You did not pass ${result.testTitle} this time. You scored ${result.score} marks and ${result.percentage} percent. Keep working hard, and best of luck on your next test.`;
 
     window.speechSynthesis.cancel();
     const utterance = new window.SpeechSynthesisUtterance(announcement);
@@ -1389,7 +1397,7 @@ const StudentPortal = () => {
                 : "bg-gradient-to-br from-amber-50 via-white to-orange-50"
             }`}
           >
-            {resultCelebration.position && resultCelebration.position <= 3 ? (
+            {resultCelebration.passed && resultCelebration.position && resultCelebration.position <= 3 ? (
               <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
                 {Array.from({ length: 32 }, (_, index) => (
                   <span
@@ -1405,7 +1413,7 @@ const StudentPortal = () => {
               </div>
             ) : null}
             <div className="relative z-10 mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-white shadow-lg ring-8 ring-white/70">
-              {resultCelebration.position && resultCelebration.position <= 3 ? (
+              {resultCelebration.passed && resultCelebration.position && resultCelebration.position <= 3 ? (
                 <Award size={40} className="text-amber-500" />
               ) : resultCelebration.passed ? (
                 <CheckCircleFilled className="!text-[42px] !text-emerald-500" />
@@ -1417,14 +1425,14 @@ const StudentPortal = () => {
               <div className={`text-xs font-bold uppercase tracking-[0.2em] ${
                 resultCelebration.passed ? "text-emerald-700" : "text-amber-700"
               }`}>
-                {resultCelebration.passed ? "Test completed" : "Keep learning"}
+                {resultCelebration.passed ? "Test passed" : "Hard luck"}
               </div>
               <h2 className="mb-0 mt-2 text-2xl font-extrabold text-slate-900">
-                {resultCelebration.position && resultCelebration.position <= 3
+                {resultCelebration.passed && resultCelebration.position && resultCelebration.position <= 3
                   ? `Congratulations, ${studentName}!`
                   : resultCelebration.passed
                     ? `Well done, ${studentName}!`
-                    : `Keep going, ${studentName}!`}
+                    : `Hard luck, ${studentName}.`}
               </h2>
               {resultCelebration.passed ? (
                 <div className="mt-2 flex justify-center text-amber-500">
@@ -1432,11 +1440,11 @@ const StudentPortal = () => {
                 </div>
               ) : null}
               <p className="mx-auto mb-0 mt-2 max-w-sm text-sm text-slate-600">
-                {resultCelebration.position && resultCelebration.position <= 3
+                {resultCelebration.passed && resultCelebration.position && resultCelebration.position <= 3
                   ? `You earned ${resultCelebration.position === 1 ? "1st" : resultCelebration.position === 2 ? "2nd" : "3rd"} place in ${resultCelebration.testTitle}.`
                   : resultCelebration.passed
                     ? `You passed ${resultCelebration.testTitle}. Keep up the great work!`
-                    : `You did not pass this time. Keep working hard, and best of luck on your next test.`}
+                    : `You did not pass ${resultCelebration.testTitle} this time. Keep working hard, and best of luck on your next test.`}
               </p>
               <div className="mx-auto mt-6 grid max-w-sm grid-cols-2 gap-3">
                 <div className="rounded-xl border border-white bg-white/90 p-3 shadow-sm">
@@ -1461,7 +1469,7 @@ const StudentPortal = () => {
                 <Tag color={resultCelebration.passed ? "success" : "error"} className="rounded-full px-4 py-1 text-sm font-semibold">
                   {resultCelebration.passed ? "PASSED" : "NOT PASSED"}
                 </Tag>
-                {resultCelebration.position && resultCelebration.position <= 3 ? (
+                {resultCelebration.passed && resultCelebration.position && resultCelebration.position <= 3 ? (
                   <Tag color="gold" className="rounded-full px-4 py-1 text-sm font-semibold">
                     {resultCelebration.position === 1 ? "1ST PLACE" : resultCelebration.position === 2 ? "2ND PLACE" : "3RD PLACE"}
                   </Tag>

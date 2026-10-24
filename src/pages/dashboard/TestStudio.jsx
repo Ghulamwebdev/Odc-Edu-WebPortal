@@ -2114,62 +2114,6 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     return renderWizardPage();
   }
 
-  const renderAttemptAnswers = (attempt) => {
-    const questionMap = new Map((detailTest?.questions || []).map((question) => [String(question._id), question]));
-    if (!attempt.answers?.length) {
-      return <Empty description="No answers submitted for this student" />;
-    }
-
-    return (
-      <div className="space-y-3 bg-slate-50 p-3">
-        {attempt.answers.map((answer, index) => {
-          const question = questionMap.get(String(answer.questionId));
-          const optionMap = new Map((question?.options || []).map((option, optionIndex) => [String(option._id || optionIndex), option.text]));
-          const selected = (answer.selectedOptions || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
-          const correct = (question?.correctAnswers || []).map((optionId) => optionMap.get(String(optionId)) || optionId);
-          const answered = selected.length > 0 || Boolean(String(answer.textAnswer || "").trim());
-          const answerStatus = answer.isCorrect === true
-            ? "Right"
-            : !answered
-              ? "Unanswered"
-              : answer.autoGraded === false
-                ? "Needs Review"
-                : "Wrong";
-
-          return (
-            <div key={`${answer.questionId}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="font-semibold text-primary">
-                  Q{index + 1}. {question?.questionText || "Question"}
-                </div>
-                <Tag color={answerStatus === "Right" ? "green" : answerStatus === "Wrong" ? "red" : "orange"}>
-                  {answerStatus}
-                </Tag>
-              </div>
-              <div className="mt-2 grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
-                <div>
-                  <div className="text-xs font-semibold uppercase text-slate-500">Student Answer</div>
-                  <div>{selected.length ? selected.join(", ") : answer.textAnswer || "No answer"}</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold uppercase text-slate-500">Correct Answer</div>
-                  <div>{correct.length ? correct.join(", ") : question?.modelAnswer || "N/A"}</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold uppercase text-slate-500">Marks</div>
-                  <div>{answer.marksAwarded || 0} / {question?.marks || 0}</div>
-                </div>
-              </div>
-              {question?.explanation ? (
-                <div className="mt-2 text-xs text-slate-500">Explanation: {question.explanation}</div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
   const getAttemptAnswerCounts = (attempt) =>
     (attempt.answers || []).reduce(
       (counts, answer) => {
@@ -2601,11 +2545,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
             loading={detailAttemptsLoading}
             dataSource={visibleDetailAttempts}
             pagination={{ pageSize: 20, showSizeChanger: true }}
-            scroll={{ x: "max-content", y: 560 }}
-            expandable={{
-              expandedRowRender: renderAttemptAnswers,
-              rowExpandable: (attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status),
-            }}
+            scroll={{ y: 560 }}
+            tableLayout="fixed"
             columns={[
               {
                 title: "Position",
@@ -2912,11 +2853,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 loading={detailAttemptsLoading}
                 dataSource={detailAttempts}
                 pagination={{ pageSize: 5 }}
-                scroll={{ x: "max-content" }}
-                expandable={{
-                  expandedRowRender: renderAttemptAnswers,
-                  rowExpandable: (attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status),
-                }}
+                tableLayout="fixed"
                 columns={[
                   {
                     title: "Student",
