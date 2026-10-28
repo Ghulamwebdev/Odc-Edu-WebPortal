@@ -76,6 +76,17 @@ const parseCourseIds = (value) => {
   }
 };
 
+const parsePermissionInput = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const validateCourseIds = async (courseIds = []) => {
   const uniqueIds = [...new Set(courseIds.map(String))];
   if (!uniqueIds.length) return [];
@@ -222,6 +233,13 @@ export const createEmployee = async (req, res) => {
   try {
     const fileError = validateProfileFile(req.file);
     if (fileError) return res.status(400).json({ success: false, message: fileError });
+    const hasPermissions = Object.prototype.hasOwnProperty.call(req.body, "permissions");
+    const submittedPermissions = hasPermissions
+      ? parsePermissionInput(req.body.permissions)
+      : null;
+    if (hasPermissions && !submittedPermissions) {
+      return res.status(400).json({ success: false, message: "Employee permissions are invalid." });
+    }
 
     const name = toText(req.body.name || req.body.fullName);
     const email = toEmail(req.body.email);
@@ -258,7 +276,9 @@ export const createEmployee = async (req, res) => {
         job: designation,
         status: status === "inactive" ? "inactive" : "active",
       },
-      permissions: employeePermissions(),
+      permissions: hasPermissions
+        ? normalizePermissions(submittedPermissions)
+        : employeePermissions(),
     });
 
     await syncEmployeeCourses(employee._id, parseCourseIds(req.body.courseIds), req.user?._id || req.user?.id);
@@ -272,6 +292,13 @@ export const updateEmployee = async (req, res) => {
   try {
     const fileError = validateProfileFile(req.file);
     if (fileError) return res.status(400).json({ success: false, message: fileError });
+    const hasPermissions = Object.prototype.hasOwnProperty.call(req.body, "permissions");
+    const submittedPermissions = hasPermissions
+      ? parsePermissionInput(req.body.permissions)
+      : null;
+    if (hasPermissions && !submittedPermissions) {
+      return res.status(400).json({ success: false, message: "Employee permissions are invalid." });
+    }
 
     const employeeRole = await ensureEmployeeRole();
     const employee = await UserAuth.findById(req.params.id);
@@ -297,7 +324,10 @@ export const updateEmployee = async (req, res) => {
 
     employee.role = employeeRole._id.toString();
     employee.legacyRole = employeeRole.name;
-    employee.permissions = employeePermissions();
+    employee.accountType = "employee";
+    if (hasPermissions) {
+      employee.permissions = normalizePermissions(submittedPermissions);
+    }
     employee.isActive = String(req.body.status || (employee.isActive ? "active" : "inactive")).toLowerCase() !== "inactive";
     employee.details = {
       ...(employee.details?.toObject ? employee.details.toObject() : employee.details || {}),

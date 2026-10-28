@@ -72,36 +72,25 @@ export const buildPermissionsMap = (user, resolvedRole = null) => {
     return acc;
   }, {});
 
-  if (!role?.permissions?.length) {
-    if (user?.permissions?.length) {
-      normalizePermissions(user.permissions).forEach((permission) => {
-        permissionMap[permission.module] = {
-          ...createEmptyActions(),
-          ...(permission.actions || {}),
-        };
-      });
-    }
-
-    return permissionMap;
-  }
-
-  normalizePermissions(role.permissions).forEach((permission) => {
+  normalizePermissions(role?.permissions || []).forEach((permission) => {
     permissionMap[permission.module] = {
       ...createEmptyActions(),
       ...(permission.actions || {}),
     };
   });
 
-  if (user?.accountType === "employee") {
-    const employeePermission = user.permissions?.find(
-      (permission) => permission?.module === "employees",
+  if (user?.permissions?.length) {
+    const explicitModules = new Set(
+      user.permissions.map((permission) => permission?.module).filter(Boolean),
     );
-    if (employeePermission) {
-      permissionMap.employees = {
-        ...permissionMap.employees,
-        ...employeePermission.actions,
+    normalizePermissions(user.permissions)
+      .filter((permission) => explicitModules.has(permission.module))
+      .forEach((permission) => {
+      permissionMap[permission.module] = {
+        ...createEmptyActions(),
+        ...(permission.actions || {}),
       };
-    }
+      });
   }
 
   return permissionMap;

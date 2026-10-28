@@ -18,6 +18,20 @@ export default function ProtectedRoute({
   const roleName = adminInfo?.userData?.role || "";
   const employeeMode = String(roleName || "").toLowerCase() === "employee";
   const studentMode = String(roleName || "").toLowerCase() === "student";
+  const employeeModulePaths = {
+    "/dashboard/courses": "courses",
+    "/dashboard/employees": "employees",
+    "/dashboard/teachers": "employees",
+    "/dashboard/test-studio": "test_studio",
+    "/dashboard/students": "students",
+    "/dashboard/certification": "certifications",
+    "/dashboard/announcements": "announcements",
+    "/dashboard/accounting": "accounting",
+    "/dashboard/attendance": "attendance",
+  };
+  const employeeModulePath = Object.entries(employeeModulePaths).find(
+    ([path]) => location.pathname === path || location.pathname.startsWith(`${path}/`),
+  )?.[1];
 
   if (!token && !localToken) {
     return <Navigate to="/login" replace />;
@@ -35,14 +49,22 @@ export default function ProtectedRoute({
     return <Navigate to="/student-portal" replace />;
   }
 
-  if (employeeMode && !employeeOnly && !moduleKey) {
-    return <Navigate to="/employee-dashboard" replace />;
+  if (employeeMode && !employeeOnly && !moduleKey && location.pathname !== "/dashboard/no-access") {
+    const firstPath = getFirstAccessibleDashboardPath({
+      permissions,
+      isSuperAdmin: superAdminMode,
+      role: roleName,
+    });
+    if (!employeeModulePath || permissions?.[employeeModulePath]?.view !== true) {
+      return <Navigate to={firstPath || "/dashboard/no-access"} replace />;
+    }
   }
 
   if (superAdminOnly && !superAdminMode) {
     const target = getFirstAccessibleDashboardPath({
       permissions,
       isSuperAdmin: superAdminMode,
+      role: roleName,
     });
     return (
       <Navigate
@@ -56,6 +78,7 @@ export default function ProtectedRoute({
     const target = getFirstAccessibleDashboardPath({
       permissions,
       isSuperAdmin: superAdminMode,
+      role: roleName,
     });
 
     if (!target) {

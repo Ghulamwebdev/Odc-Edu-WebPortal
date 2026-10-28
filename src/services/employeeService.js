@@ -6,6 +6,8 @@ const toFormData = (payload = {}) => {
     if (value === undefined || value === null) return;
     if (key === "courseIds") {
       formData.append(key, JSON.stringify(value || []));
+    } else if (key === "permissions") {
+      formData.append(key, JSON.stringify(value || []));
     } else if (key === "profile" && Array.isArray(value) && value[0]?.originFileObj) {
       formData.append(key, value[0].originFileObj);
     } else if (key === "profile" && value?.originFileObj) {

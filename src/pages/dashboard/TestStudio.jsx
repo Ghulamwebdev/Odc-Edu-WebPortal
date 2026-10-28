@@ -187,10 +187,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const appSettings = useZustandStore((state) => state.appSettings);
   const employeeMode =
     String(adminInfo?.userData?.role || "").toLowerCase() === "employee";
-  const canCreateTest = employeeMode || permissions.create;
-  const canUpdateTest = employeeMode || permissions.update;
-  const canPublishTest = employeeMode || permissions.approve;
-  const canDeleteTest = employeeMode || permissions.delete;
+  const canCreateTest = permissions.create;
+  const canUpdateTest = permissions.update;
+  const canPublishTest = permissions.approve;
+  const canDeleteTest = permissions.delete;
   const [tests, setTests] = useState([]);
   const [options, setOptions] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);

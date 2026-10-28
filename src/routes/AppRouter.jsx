@@ -29,7 +29,6 @@ import CoachingClasses from "../pages/website/pages/CoachingClasses";
 import CareerOpportunities from "../pages/website/pages/CareerOpportunities";
 import Courses from "../pages/dashboard/Courses";
 import Teachers from "../pages/dashboard/Teachers";
-import EmployeeManagement from "../pages/dashboard/EmployeeManagement";
 import EmployeeDashboard from "../pages/dashboard/EmployeeDashboard";
 import TestStudio from "../pages/dashboard/TestStudio";
 import StudentTestHistory from "../pages/dashboard/StudentTestHistory";
@@ -94,9 +93,9 @@ function AppRouter() {
           <Route index element={<ProtectedRoute moduleKey="dashboard"><Dashboard /></ProtectedRoute>} />
           <Route path="courses" element={<ProtectedRoute moduleKey="courses"><Courses /></ProtectedRoute>} />
           <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
-          <Route path="employee-accounts" element={<ProtectedRoute superAdminOnly><EmployeeManagement /></ProtectedRoute>} />
+          <Route path="employee-accounts" element={<Navigate to="/dashboard/super-admin?section=roles&view=users" replace />} />
           <Route path="test-studio" element={<ProtectedRoute moduleKey="test_studio"><TestStudio /></ProtectedRoute>} />
-          <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio"><TestStudio setupMode /></ProtectedRoute>} />
+          <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio" action="create"><TestStudio setupMode /></ProtectedRoute>} />
           <Route path="test-studio/student/:studentId" element={<ProtectedRoute moduleKey="test_studio"><StudentTestHistory /></ProtectedRoute>} />
           <Route path="test-studio/:id" element={<ProtectedRoute moduleKey="test_studio"><TestStudio detailMode /></ProtectedRoute>} />
           <Route path="teachers" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
@@ -167,13 +166,13 @@ function AppRouter() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<EmployeeDashboard />} />
+          <Route index element={<ProtectedRoute moduleKey="dashboard"><EmployeeDashboard /></ProtectedRoute>} />
           <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
-          <Route path="test-studio" element={<TestStudio />} />
-          <Route path="test-studio/create" element={<TestStudio setupMode />} />
-          <Route path="test-studio/student/:studentId" element={<StudentTestHistory />} />
-          <Route path="test-studio/:id" element={<TestStudio detailMode />} />
-          <Route path="test-paper-header" element={<TestPaperHeader />} />
+          <Route path="test-studio" element={<ProtectedRoute moduleKey="test_studio"><TestStudio /></ProtectedRoute>} />
+          <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio" action="create"><TestStudio setupMode /></ProtectedRoute>} />
+          <Route path="test-studio/student/:studentId" element={<ProtectedRoute moduleKey="test_studio"><StudentTestHistory /></ProtectedRoute>} />
+          <Route path="test-studio/:id" element={<ProtectedRoute moduleKey="test_studio"><TestStudio detailMode /></ProtectedRoute>} />
+          <Route path="test-paper-header" element={<ProtectedRoute moduleKey="test_studio" action="update"><TestPaperHeader /></ProtectedRoute>} />
         </Route>
       </Routes>
     </Router>

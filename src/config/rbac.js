@@ -140,12 +140,26 @@ export const getFirstAccessibleDashboardPath = ({
     return "/student-portal";
   }
 
-  if (String(role || "").toLowerCase() === "employee") {
-    return "/employee-dashboard";
-  }
-
   if (isSuperAdmin) {
     return "/dashboard/super-admin?section=overview";
+  }
+
+  if (String(role || "").toLowerCase() === "employee") {
+    if (permissions?.dashboard?.view) {
+      return "/employee-dashboard";
+    }
+
+    const firstEmployeeModule = DASHBOARD_MODULE_LINKS.find(
+      (item) => !item.superAdminOnly && permissions?.[item.key]?.view,
+    );
+    if (!firstEmployeeModule) return null;
+    if (firstEmployeeModule.key === "test_studio") {
+      return "/employee-dashboard/test-studio";
+    }
+    if (firstEmployeeModule.key === "employees") {
+      return "/employee-dashboard/employees";
+    }
+    return firstEmployeeModule.path;
   }
 
   const match = DASHBOARD_MODULE_LINKS.find((item) => {
