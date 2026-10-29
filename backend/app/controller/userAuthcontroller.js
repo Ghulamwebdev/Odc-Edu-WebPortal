@@ -4,6 +4,7 @@ import Role from "../modules/roleModule.js";
 import UserAuth from "../modules/userAuthModal.js";
 import {
   buildPermissionsMap,
+  normalizePermissions,
   resolveRoleForUser,
   serializeRoleForClient,
 } from "../utils/rbac.js";
@@ -22,7 +23,7 @@ const persistUserStateByEmail = async (user, updates = {}) => {
 
 const createUser = async (req, res) => {
   try {
-    const { name, roleId, role, password, isSuperAdmin = false } = req.body;
+    const { name, roleId, role, password, isSuperAdmin = false, permissions } = req.body;
     const email = req.body.email?.trim().toLowerCase();
 
     const existingUser = await UserAuth.findOne({ email });
@@ -57,6 +58,7 @@ const createUser = async (req, res) => {
       profile: image,
       isSuperAdmin: Boolean(isSuperAdmin),
       isActive: true,
+      permissions: Array.isArray(permissions) ? normalizePermissions(permissions) : [],
     });
 
     await createdUser.save();

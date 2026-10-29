@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import {
   DatePicker,
   Button,
@@ -14,6 +14,7 @@ import {
   Switch,
   Table,
   Tag,
+  Upload,
   message,
   Statistic,
 } from "antd";
@@ -24,6 +25,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SafetyOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import {
@@ -39,6 +41,13 @@ import {
   updateRole,
 } from "../../services/roleService";
 import { createNewAdmin } from "../../services/authService";
+import { getCourses } from "../../services/feeService";
+import {
+  createEmployee,
+  deleteEmployee,
+  getEmployees,
+  updateEmployee,
+} from "../../services/employeeService";
 import {
   deleteAdmin,
   getAllAdminInfo,
@@ -164,14 +173,32 @@ const extractRoleRecord = (response) => {
 const isCustomRoleUser = (user, roles) =>
   roles.some((role) => !role.isSystem && role._id === user?.roleId);
 
+const isEmployeeAccount = (user) =>
+  user?.accountType === "employee" ||
+  String(user?.role || "").toLowerCase() === "employee";
+
 const shouldShowUserInTable = (user, roles) =>
-  user?.isSuperAdmin === true || isCustomRoleUser(user, roles);
+  user?.isSuperAdmin === true ||
+  isEmployeeAccount(user) ||
+  isCustomRoleUser(user, roles);
 
 const overviewTablePagination = false;
 
 const tableScrollConfig = {
   x: "max-content",
   y: 360,
+};
+
+const beforeUploadEmployeeProfile = (file) => {
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    message.error("Profile picture must be JPG, PNG, or WEBP.");
+    return Upload.LIST_IGNORE;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    message.error("Profile picture must be 2MB or smaller.");
+    return Upload.LIST_IGNORE;
+  }
+  return false;
 };
 
 const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
@@ -259,9 +286,16 @@ const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
                 }
 
                 updateModule({
-                  ...currentActions,
-                  [action]: checked,
-                  view: action === "view" ? checked : currentActions.view || checked,
+                  ...(action === "view" && !checked
+                    ? RBAC_ACTIONS.reduce((acc, item) => {
+                        acc[item] = false;
+                        return acc;
+                      }, {})
+                    : {
+                        ...currentActions,
+                        [action]: checked,
+                        view: action === "view" ? checked : currentActions.view || checked,
+                      }),
                 });
               }}
             />
@@ -274,10 +308,11 @@ const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
 };
 
 const SuperAdmin = () => {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [roles, setRoles] = useState([]);
   const [users, setUsers] = useState([]);
+  const [employeeRecords, setEmployeeRecords] = useState([]);
+  const [courses, setCourses] = useState([]);
   const [loadingRoles, setLoadingRoles] = useState(false);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
@@ -286,6 +321,7 @@ const SuperAdmin = () => {
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [savingUser, setSavingUser] = useState(false);
+  const [accountPermissionState, setAccountPermissionState] = useState(createPermissionTemplate());
   const [activeRolesView, setActiveRolesView] = useState("roles");
   const [activePermissionRoleId, setActivePermissionRoleId] = useState(null);
   const [permissionEditorState, setPermissionEditorState] = useState(createPermissionTemplate());
@@ -303,6 +339,7 @@ const SuperAdmin = () => {
   const [financeData, setFinanceData] = useState(null);
   const [form] = Form.useForm();
   const [userForm] = Form.useForm();
+  const selectedAccountType = Form.useWatch("accountType", userForm) || "employee";
 
   const currentSection = ["overview", "roles", "permissions", "finance"].includes(
     searchParams.get("section"),
@@ -340,10 +377,36 @@ const SuperAdmin = () => {
     }
   };
 
+  const loadEmployeeRecords = async () => {
+    try {
+      const response = await getEmployees();
+      setEmployeeRecords(response?.data || []);
+    } catch (error) {
+      message.error(error?.message || "Failed to load employee details");
+    }
+  };
+
+  const loadCourses = async () => {
+    try {
+      const response = await getCourses();
+      setCourses(response?.data || []);
+    } catch (error) {
+      message.error(error?.message || "Failed to load courses");
+    }
+  };
+
   useEffect(() => {
     loadRoles();
     loadUsers();
+    loadEmployeeRecords();
+    loadCourses();
   }, []);
+
+  useEffect(() => {
+    if (searchParams.get("view") === "users") {
+      setActiveRolesView("users");
+    }
+  }, [searchParams]);
 
   const loadFinanceMonitor = async (monthValue = financeMonth) => {
     setFinanceLoading(true);
@@ -414,19 +477,31 @@ const SuperAdmin = () => {
   const openCreateUserModal = () => {
     setEditingUser(null);
     userForm.resetFields();
+    userForm.setFieldsValue({ accountType: "employee", status: "active", courseIds: [] });
+    setAccountPermissionState(createPermissionTemplate());
     setUserModalOpen(true);
   };
 
   const openEditUserModal = (user) => {
     setEditingUser(user);
+    const employee = isEmployeeAccount(user)
+      ? employeeRecords.find((record) => record._id === user._id)
+      : null;
     userForm.setFieldsValue({
       name: user.name,
       email: user.email,
+      accountType: isEmployeeAccount(user) ? "employee" : "admin",
       roleId: customRoleOptions.some((option) => option.value === user.roleId)
         ? user.roleId
         : undefined,
+      phone: employee?.phone || user.details?.phone || "",
+      designation: employee?.designation || user.details?.job || "",
+      status: user.isActive ? "active" : "inactive",
+      courseIds: employee?.courseIds || [],
+      profile: [],
       password: "",
     });
+    setAccountPermissionState(normalizePermissionsState(user.permissions));
     setUserModalOpen(true);
   };
 
@@ -497,28 +572,49 @@ const SuperAdmin = () => {
   const handleCreateUser = async (values) => {
     setSavingUser(true);
     try {
-      if (editingUser) {
+      const permissions = toRolePayload(normalizePermissionsState(accountPermissionState));
+      if (values.accountType === "employee") {
+        const payload = {
+          name: values.name,
+          email: values.email,
+          phone: values.phone || "",
+          designation: values.designation,
+          status: values.status || "active",
+          courseIds: values.courseIds || [],
+          profile: values.profile?.fileList || values.profile || [],
+          permissions,
+        };
+        if (values.password) payload.password = values.password;
+
+        if (editingUser) {
+          await updateEmployee(editingUser._id, payload);
+          message.success("Employee account updated successfully");
+        } else {
+          await createEmployee(payload);
+          message.success("Employee account created successfully");
+        }
+      } else {
         const payload = {
           name: values.name,
           email: values.email,
           roleId: values.roleId,
+          permissions,
         };
+        if (values.password) payload.password = values.password;
 
-        if (values.password) {
-          payload.password = values.password;
+        if (editingUser) {
+          await updateAdminInfo(editingUser._id, payload);
+          message.success("User updated successfully");
+        } else {
+          await createNewAdmin({ ...payload, password: values.password });
+          message.success("User created successfully");
         }
-
-        await updateAdminInfo(editingUser._id, payload);
-        message.success("User updated successfully");
-      } else {
-        await createNewAdmin(values);
-        message.success("User created successfully");
       }
 
       setUserModalOpen(false);
       setEditingUser(null);
       userForm.resetFields();
-      await Promise.all([loadUsers(), loadRoles()]);
+      await Promise.all([loadUsers(), loadRoles(), loadEmployeeRecords()]);
     } catch (error) {
       message.error(error?.message || "Failed to save user");
     } finally {
@@ -528,9 +624,14 @@ const SuperAdmin = () => {
 
   const handleDeleteUser = async (userId) => {
     try {
-      await deleteAdmin(userId);
+      const user = users.find((item) => item._id === userId);
+      if (isEmployeeAccount(user)) {
+        await deleteEmployee(userId);
+      } else {
+        await deleteAdmin(userId);
+      }
       message.success("User deleted successfully");
-      await loadUsers();
+      await Promise.all([loadUsers(), loadEmployeeRecords()]);
     } catch (error) {
       message.error(error?.message || "Failed to delete user");
     }
@@ -569,15 +670,6 @@ const SuperAdmin = () => {
     setSavingUserAccess(true);
     try {
       const normalizedPermissions = normalizePermissionsState(userPermissionEditorState);
-      const linkedRole = roles.find((role) => role._id === selectedUser.roleId);
-
-      if (linkedRole && !linkedRole.isSystem) {
-        await updateRole(linkedRole._id, {
-          name: linkedRole.name,
-          description: linkedRole.description || "",
-          permissions: toRolePayload(normalizedPermissions),
-        });
-      }
 
       await updateAdminInfo(selectedUser._id, {
         name: selectedUser.name,
@@ -656,7 +748,7 @@ const SuperAdmin = () => {
       {
         label: "Total Users",
         value: visibleUsers.length,
-        note: "Custom role users",
+        note: "Accounts managed here",
       },
       {
         label: "Active Users",
@@ -805,6 +897,13 @@ const SuperAdmin = () => {
           return (
             <Tag color="gold" className="!px-3 !py-1">
               Super Admin
+            </Tag>
+          );
+        }
+        if (isEmployeeAccount(record)) {
+          return (
+            <Tag color="cyan" className="!px-3 !py-1">
+              Employee{record.details?.job ? ` · ${record.details.job}` : ""}
             </Tag>
           );
         }
@@ -1060,8 +1159,15 @@ const SuperAdmin = () => {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button type="primary" onClick={() => navigate("/dashboard/employee-accounts")}>
-              Open Employee Accounts
+            <Button
+              type="primary"
+              onClick={() => {
+                setSection("roles");
+                setActiveRolesView("users");
+                openCreateUserModal();
+              }}
+            >
+              Create Account
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => Promise.all([loadRoles(), loadUsers()])}>
               Refresh
@@ -1199,7 +1305,7 @@ const SuperAdmin = () => {
           title="Users Table"
           extra={
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreateUserModal}>
-              <span className="text-accent">Create User</span>
+                <span className="text-accent">Create Account</span>
             </Button>
           }
           className="rounded-2xl shadow-sm"
@@ -1578,69 +1684,172 @@ const SuperAdmin = () => {
       </Modal>
 
       <Modal
-        title="Create User"
+        title={editingUser ? "Edit Account" : "Create Account"}
         open={userModalOpen}
         onCancel={() => {
           setUserModalOpen(false);
           setEditingUser(null);
         }}
         onOk={() => userForm.submit()}
-        okText={editingUser ? "Update User" : "Create User"}
+        okText={editingUser ? "Update Account" : "Create Account"}
         confirmLoading={savingUser}
-        width={620}
+        width={1000}
         okButtonProps={{ className: "!bg-primary !border-primary hover:!bg-[#0e215fc7]" }}
       >
-        <Form layout="vertical" form={userForm} onFinish={handleCreateUser}>
-          <Form.Item
-            name="name"
-            label="Name"
-            rules={[{ required: true, message: "Name is required" }]}
+        <div className="max-h-[76vh] overflow-y-auto pr-2">
+          <Form
+            layout="vertical"
+            form={userForm}
+            onFinish={handleCreateUser}
+            onValuesChange={(changedValues) => {
+              if (Object.prototype.hasOwnProperty.call(changedValues, "roleId")) {
+                const role = roles.find((item) => item._id === changedValues.roleId);
+                setAccountPermissionState(
+                  role ? buildPermissionsFromRole(role) : createPermissionTemplate(),
+                );
+              }
+            }}
           >
-            <Input size="large" placeholder="Enter full name" className="form-input" />
-          </Form.Item>
+            <Form.Item
+              name="accountType"
+              label="Account Type"
+              rules={[{ required: true, message: "Account type is required" }]}
+            >
+              <Select
+                size="large"
+                disabled={Boolean(editingUser)}
+                options={[
+                  { label: "Employee / Teacher Account", value: "employee" },
+                  { label: "Role-based Admin Account", value: "admin" },
+                ]}
+                className="form-input"
+              />
+            </Form.Item>
 
-          <Form.Item
-            name="email"
-            label="Email"
-            rules={[
-              { required: true, message: "Email is required" },
-              { type: "email", message: "Enter a valid email" },
-            ]}
-          >
-            <Input size="large" placeholder="Enter email address" className="form-input" />
-          </Form.Item>
+            <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+              <Form.Item
+                name="name"
+                label="Full Name"
+                rules={[{ required: true, message: "Name is required" }]}
+              >
+                <Input size="large" placeholder="Enter full name" className="form-input" />
+              </Form.Item>
+              <Form.Item
+                name="email"
+                label="Email"
+                rules={[
+                  { required: true, message: "Email is required" },
+                  { type: "email", message: "Enter a valid email" },
+                ]}
+              >
+                <Input size="large" placeholder="Enter email address" className="form-input" />
+              </Form.Item>
 
-          <Form.Item
-            name="roleId"
-            label="Assign Role"
-            rules={[{ required: true, message: "Role is required" }]}
-          >
-            <Select
-              size="large"
-              options={customRoleOptions}
-              placeholder="Select a created role"
-              className="form-input role-select-theme"
-            />
-          </Form.Item>
+              {selectedAccountType === "employee" ? (
+                <>
+                  <Form.Item name="phone" label="Phone">
+                    <Input size="large" placeholder="Phone number" className="form-input" />
+                  </Form.Item>
+                  <Form.Item
+                    name="designation"
+                    label="Designation / Role"
+                    rules={[{ required: true, message: "Designation is required" }]}
+                  >
+                    <Input
+                      size="large"
+                      placeholder="Teacher, Coordinator, Instructor..."
+                      className="form-input"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="status"
+                    label="Account Status"
+                    rules={[{ required: true, message: "Select an account status" }]}
+                  >
+                    <Select
+                      size="large"
+                      options={[
+                        { label: "Active", value: "active" },
+                        { label: "Inactive", value: "inactive" },
+                      ]}
+                      className="form-input"
+                    />
+                  </Form.Item>
+                  <Form.Item name="courseIds" label="Assigned Courses">
+                    <Select
+                      mode="multiple"
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      options={courses.map((course) => ({
+                        value: course._id,
+                        label: `${course.courseName} (${course.courseId})`,
+                      }))}
+                      placeholder="Select courses for this employee"
+                      className="form-input"
+                    />
+                  </Form.Item>
+                  <Form.Item name="profile" label="Profile Picture">
+                    <Upload
+                      beforeUpload={beforeUploadEmployeeProfile}
+                      maxCount={1}
+                      listType="picture"
+                    >
+                      <Button icon={<UploadOutlined />}>Select JPG, PNG, or WEBP</Button>
+                    </Upload>
+                  </Form.Item>
+                </>
+              ) : (
+                <Form.Item
+                  name="roleId"
+                  label="Assign Role"
+                  rules={[{ required: true, message: "Role is required" }]}
+                >
+                  <Select
+                    size="large"
+                    options={customRoleOptions}
+                    placeholder="Select a created role"
+                    className="form-input role-select-theme"
+                  />
+                </Form.Item>
+              )}
 
-          <Form.Item
-            name="password"
-            label="Password"
-            rules={[
-              {
-                required: !editingUser,
-                message: "Password is required",
-              },
-              { min: 6, message: "Minimum 6 characters" },
-            ]}
-          >
-            <Input.Password
-              size="large"
-              placeholder={editingUser ? "Leave blank to keep current password" : "Create a secure password"}
-              className="form-input password-input"
-            />
-          </Form.Item>
-        </Form>
+              <Form.Item
+                name="password"
+                label="Password"
+                rules={[
+                  { required: !editingUser, message: "Password is required" },
+                  { min: 6, message: "Minimum 6 characters" },
+                ]}
+              >
+                <Input.Password
+                  size="large"
+                  placeholder={editingUser ? "Leave blank to keep current password" : "Create a secure password"}
+                  className="form-input password-input"
+                />
+              </Form.Item>
+            </div>
+
+            <section className="mt-2">
+              <div className="mb-3">
+                <h3 className="m-0 text-lg font-ArialBold text-primary">Module Access & Permissions</h3>
+                <p className="m-0 mt-1 text-sm text-slate-500">
+                  This account can perform only the actions enabled below.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {RBAC_MODULES.map((moduleKey) => (
+                  <PermissionModuleCard
+                    key={moduleKey}
+                    moduleKey={moduleKey}
+                    permissions={accountPermissionState}
+                    setPermissions={setAccountPermissionState}
+                  />
+                ))}
+              </div>
+            </section>
+          </Form>
+        </div>
       </Modal>
 
       <Modal
@@ -1683,6 +1892,13 @@ const SuperAdmin = () => {
                 <div className="text-xs text-slate-400">Assigned Role</div>
                 {selectedUser.isSuperAdmin ? (
                   <div className="mt-1 text-base font-ArialBold text-primary">Super Admin</div>
+                ) : isEmployeeAccount(selectedUser) ? (
+                  <div className="mt-2">
+                    <Tag color="cyan">Employee</Tag>
+                    <span className="text-sm text-slate-600">
+                      {selectedUser.details?.job || "No designation"}
+                    </span>
+                  </div>
                 ) : (
                   <Select
                     value={selectedUser.roleId || undefined}
@@ -1708,7 +1924,11 @@ const SuperAdmin = () => {
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="text-xs text-slate-400">Account Type</div>
                 <div className="mt-1 text-base font-ArialBold text-primary">
-                  {selectedUser.isSuperAdmin ? "Super Admin" : "Role-based User"}
+                  {selectedUser.isSuperAdmin
+                    ? "Super Admin"
+                    : isEmployeeAccount(selectedUser)
+                    ? "Employee Account"
+                    : "Role-based Admin"}
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

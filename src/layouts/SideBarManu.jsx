@@ -9,7 +9,6 @@ import {
   MdDescription,
   MdOutlineManageAccounts,
   MdOutlineCategory,
-  MdPeopleAlt,
   MdOutlineSecurity,
   MdOutlineTune,
   MdPayments,
@@ -63,7 +62,6 @@ const SideBarManu = () => {
 
       const visibleLinks = links.filter((item) => {
         if (item.superAdminOnly) return superAdminMode;
-        if (employeeMode && item.key === "test_studio") return true;
         return permissions?.[item.key]?.view === true;
       });
 
@@ -170,12 +168,6 @@ const SideBarManu = () => {
   ];
 
   const superAdminLinks = [
-    {
-      key: "employee-accounts",
-      title: "Employee Accounts",
-      path: "/dashboard/employee-accounts",
-      icon: MdPeopleAlt,
-    },
     {
       key: "test-studio",
       title: "Test Studio",
@@ -328,7 +320,9 @@ const SideBarManu = () => {
                     </NavLink>
                   )}
                 </li>
-                {employeeMode && link.key === "test_studio" && (
+                {employeeMode &&
+                  link.key === "test_studio" &&
+                  permissions?.test_studio?.update === true && (
                   <li>
                     <NavLink
                       to="/employee-dashboard/test-paper-header"
@@ -383,9 +377,7 @@ const SideBarManu = () => {
                 <ul className="mt-2 space-y-1 pl-4">
                   {superAdminLinks.map((item) => {
                     const active =
-                      item.key === "employee-accounts"
-                        ? location.pathname === "/dashboard/employee-accounts"
-                        : item.key === "test-studio"
+                      item.key === "test-studio"
                         ? location.pathname === "/dashboard/test-studio"
                         : item.key === "app-settings"
                         ? location.pathname === "/dashboard/app-settings"

@@ -57,7 +57,7 @@ import {
 } from "lucide-react";
 import { useModulePermissions } from "../../hooks/usePermissions";
 import useZustandStore from "../../stores/zustandStore";
-import { getBrandLogo, getSchoolName } from "../../utils/branding";
+import { getBrandLogo, getPdfBrandLogo, getSchoolName } from "../../utils/branding";
 import {
   createTest,
   deleteTest,
@@ -187,10 +187,10 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const appSettings = useZustandStore((state) => state.appSettings);
   const employeeMode =
     String(adminInfo?.userData?.role || "").toLowerCase() === "employee";
-  const canCreateTest = employeeMode || permissions.create;
-  const canUpdateTest = employeeMode || permissions.update;
-  const canPublishTest = employeeMode || permissions.approve;
-  const canDeleteTest = employeeMode || permissions.delete;
+  const canCreateTest = permissions.create;
+  const canUpdateTest = permissions.update;
+  const canPublishTest = permissions.approve;
+  const canDeleteTest = permissions.delete;
   const [tests, setTests] = useState([]);
   const [options, setOptions] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);
@@ -1329,7 +1329,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     const pageWidth = doc.internal.pageSize.getWidth();
     const margin = 14;
     const contentWidth = pageWidth - margin * 2;
-    const logoSize = 24;
+    const logoSize = 36;
     const top = 12;
     const logoRendered = addPdfImage(doc, logoData, margin, top, logoSize, logoSize);
     const textLeft = logoRendered ? margin + logoSize + 8 : margin;
@@ -1513,13 +1513,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     }
   };
 
-  const downloadTestResultsPdf = (test, attempts) => {
+  const downloadTestResultsPdf = async (test, attempts) => {
     try {
       const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
       const filteredAttempts = attempts || [];
       const submitted = filteredAttempts
         .filter((attempt) => ["submitted", "auto_submitted", "graded"].includes(attempt.status))
-        .sort((left, right) => Number(right.score || 0) - Number(left.score || 0));
+        .sort((left, right) => {
+          const scoreDifference = Number(right.score || 0) - Number(left.score || 0);
+          if (scoreDifference) return scoreDifference;
+          const percentageDifference = Number(right.percentage || 0) - Number(left.percentage || 0);
+          if (percentageDifference) return percentageDifference;
+          return new Date(left.submittedAt || 0) - new Date(right.submittedAt || 0);
+        });
       const answerSummary = (attempt) =>
         (attempt.answers || []).reduce(
           (result, answer) => {
@@ -1566,30 +1572,75 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       ].filter(Boolean).join(" | ");
       const sortedAttempts = [
         ...submitted,
-        ...filteredAttempts.filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+        ...filteredAttempts
+          .filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status))
+          .sort((left, right) =>
+            String(left.student?.studentName || "").localeCompare(String(right.student?.studentName || "")),
+          ),
       ];
 
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const margin = 14;
+      const logoData = await normalizePdfLogo(getPdfBrandLogo(appSettings));
+      const logoSize = 24;
+      const headerTop = 9;
+      const logoX = (pageWidth - logoSize) / 2;
+      const logoRendered = addPdfImage(doc, logoData, logoX, headerTop, logoSize, logoSize);
+      const headerTextWidth = pageWidth - margin * 2;
+      const headerTextCenter = pageWidth / 2;
+      let headerY = logoRendered ? headerTop + logoSize + 6 : headerTop + 6;
+
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(16);
-      doc.text(test.title || "Test Results", 14, 14);
+      doc.setFontSize(15);
+      const schoolNameLines = doc.splitTextToSize(getSchoolName(appSettings), headerTextWidth);
+      doc.text(schoolNameLines, headerTextCenter, headerY, {
+        align: "center",
+        maxWidth: headerTextWidth,
+      });
+      headerY += schoolNameLines.length * 6;
+
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
-      doc.text(
+      const schoolDetails = [
+        appSettings?.tagline,
+        appSettings?.pdfHeaderText,
+        appSettings?.address,
+        [appSettings?.phone, appSettings?.email, appSettings?.website].filter(Boolean).join(" | "),
+      ].filter(Boolean);
+      schoolDetails.forEach((detail) => {
+        const detailLines = doc.splitTextToSize(String(detail), headerTextWidth);
+        doc.text(detailLines, headerTextCenter, headerY, { align: "center" });
+        headerY += detailLines.length * 4;
+      });
+
+      headerY += 3;
+      doc.setDrawColor(190, 198, 210);
+      doc.setLineWidth(0.25);
+      doc.line(margin, headerY, pageWidth - margin, headerY);
+      headerY += 7;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(test.title || "Test Results", margin, headerY);
+      headerY += 5;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      const courseLines = doc.splitTextToSize(
         `Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`,
-        14,
-        21,
+        pageWidth - margin * 2,
       );
+      doc.text(courseLines, margin, headerY);
+      headerY += courseLines.length * 4;
       const filterLines = doc.splitTextToSize(
         `Generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}  |  Filters: ${filterSummary}`,
-        265,
+        pageWidth - margin * 2,
       );
-      doc.text(filterLines, 14, 27);
-      const summaryY = 27 + filterLines.length * 4;
+      doc.text(filterLines, margin, headerY);
+      const summaryY = headerY + filterLines.length * 4 + 2;
       doc.text(
         `Students in report: ${filteredAttempts.length}  |  Submitted: ${submitted.length}  |  Passed: ${totals.passed}  |  Failed: ${submitted.length - totals.passed}  |  Marks: ${test.totalMarks || 0}  |  Passing marks: ${test.passingMarks || 0}`,
-        14,
+        margin,
         summaryY,
-        { maxWidth: 265 },
+        { maxWidth: pageWidth - margin * 2 },
       );
 
       autoTable(doc, {

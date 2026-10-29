@@ -4,6 +4,7 @@ import authMiddleware from "../midlewear/authMiddleware.js";
 import requireAuth from "../midlewear/requireAuth.js";
 import superAdminOnly from "../midlewear/superAdminOnly.js";
 import employeeOnly from "../midlewear/employeeOnly.js";
+import authorize from "../midlewear/authorize.js";
 import {
   changeMyEmployeePassword,
   createEmployee,
@@ -37,6 +38,6 @@ router.delete("/:id", superAdminOnly, deleteEmployee);
 router.get("/me/profile", employeeOnly, getMyEmployeeProfile);
 router.put("/me/profile", employeeOnly, upload.single("profile"), updateMyEmployeeProfile);
 router.put("/me/password", employeeOnly, changeMyEmployeePassword);
-router.get("/me/dashboard", employeeOnly, getMyEmployeeDashboard);
+router.get("/me/dashboard", employeeOnly, authorize("dashboard", "view"), getMyEmployeeDashboard);
 
 export default router;
