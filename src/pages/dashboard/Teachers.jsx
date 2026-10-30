@@ -40,6 +40,7 @@ import {
   FaFileDownload,
 } from "react-icons/fa";
 import { UserOutlined, MailOutlined, PhoneOutlined } from "@ant-design/icons";
+import { useNavigate, useParams } from "react-router-dom";
 import TeacherForm from "../../components/forms/TeacherForm";
 import {
   createTeacher,
@@ -76,6 +77,8 @@ const getSalaryMonthBounds = (teacher) => {
 
 const Teachers = () => {
   const permissions = useModulePermissions("employees");
+  const navigate = useNavigate();
+  const { teacherId } = useParams();
   const [openModal, setOpenModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState(null);
@@ -84,7 +87,6 @@ const Teachers = () => {
   const [courses, setCourses] = useState([]);
   const [fetchingTeachers, setFetchingTeachers] = useState(true);
   const [form] = Form.useForm();
-  const [showIdCard, setShowIdCard] = useState(false);
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
@@ -96,6 +98,8 @@ const Teachers = () => {
   const [loadingTeacherCompensation, setLoadingTeacherCompensation] =
     useState(false);
   const [savingSalaryConfig, setSavingSalaryConfig] = useState(false);
+  const [salaryModeDraft, setSalaryModeDraft] = useState("fixed");
+  const [fixedSalaryDraft, setFixedSalaryDraft] = useState(null);
   const [salaryConfigDraft, setSalaryConfigDraft] = useState({
     salaryPerStudent: null,
     attendanceThreshold: 50,
@@ -123,7 +127,33 @@ const Teachers = () => {
   }, []);
 
   useEffect(() => {
-    if (!showIdCard || !selectedTeacher?._id || !selectedCompensationMonth) {
+    if (!teacherId) {
+      setSelectedTeacher(null);
+      setTeacherCompensation(null);
+      return;
+    }
+
+    const teacher = teachers.find((item) => String(item._id) === String(teacherId));
+    if (!teacher) return;
+
+    if (String(selectedTeacher?._id) === String(teacherId)) {
+      setSelectedTeacher(teacher);
+      return;
+    }
+
+    setSelectedTeacher(teacher);
+    setSalaryModeDraft(teacher.salaryType || "fixed");
+    const salaryValue = Number.parseFloat(
+      String(teacher.monthlySalary ?? "").replace(/,/g, ""),
+    );
+    setFixedSalaryDraft(Number.isFinite(salaryValue) ? salaryValue : null);
+    setSelectedCompensationMonth(
+      (currentMonth) => currentMonth || dayjs().format("YYYY-MM"),
+    );
+  }, [teacherId, teachers, selectedTeacher?._id]);
+
+  useEffect(() => {
+    if (!teacherId || !selectedTeacher?._id || !selectedCompensationMonth) {
       return;
     }
 
@@ -143,7 +173,7 @@ const Teachers = () => {
     };
     window.addEventListener("focus", refreshCompensationOnFocus);
     return () => window.removeEventListener("focus", refreshCompensationOnFocus);
-  }, [showIdCard, selectedTeacher?._id, selectedCompensationMonth]);
+  }, [teacherId, selectedTeacher?._id, selectedCompensationMonth]);
 
   const fetchTeachers = async () => {
     setFetchingTeachers(true);
@@ -268,10 +298,57 @@ const Teachers = () => {
           attendanceThreshold: normalizedAttendanceThreshold,
         };
         setSelectedTeacher(updatedTeacher);
+        setSalaryModeDraft("per_student");
         await fetchTeacherCompensation(selectedTeacher._id, resolvedMonthValue);
       }
     } catch (error) {
       message.error(error.message || "Failed to update teacher salary rule");
+    } finally {
+      setSavingSalaryConfig(false);
+    }
+  };
+
+  const handleSaveFixedSalary = async () => {
+    if (!selectedTeacher?._id) return;
+    if (!permissions.update) {
+      message.warning("You do not have permission to update employees.");
+      return;
+    }
+    if (fixedSalaryDraft === null || fixedSalaryDraft === undefined) {
+      message.warning("Please enter the monthly fixed salary.");
+      return;
+    }
+
+    const resolvedMonthValue =
+      selectedCompensationMonth || dayjs().format("YYYY-MM");
+    const selectedMonth = dayjs(`${resolvedMonthValue}-01`);
+
+    setSavingSalaryConfig(true);
+    try {
+      const response = await updateTeacherMonthlySalaryConfig(
+        selectedTeacher._id,
+        {
+          year: selectedMonth.year(),
+          month: selectedMonth.month() + 1,
+          salaryType: "fixed",
+          monthlySalary: String(fixedSalaryDraft),
+        },
+      );
+      if (response.success) {
+        message.success("Fixed monthly salary saved successfully.");
+        const updatedTeacher = {
+          ...selectedTeacher,
+          salaryType: "fixed",
+          monthlySalary: String(fixedSalaryDraft),
+          salaryPerStudent: null,
+        };
+        setSelectedTeacher(updatedTeacher);
+        setSalaryModeDraft("fixed");
+        await fetchTeachers();
+        await fetchTeacherCompensation(selectedTeacher._id, resolvedMonthValue);
+      }
+    } catch (error) {
+      message.error(error.message || "Failed to save fixed salary");
     } finally {
       setSavingSalaryConfig(false);
     }
@@ -779,12 +856,17 @@ const Teachers = () => {
   };
 
   const openIdCardModal = (teacher) => {
-    if (!permissions.print) {
-      message.warning("You do not have permission to print employee cards.");
+    if (!permissions.view) {
+      message.warning("You do not have permission to view employees.");
       return;
     }
     setSelectedTeacher(teacher);
     setTeacherCompensation(null);
+    setSalaryModeDraft(teacher.salaryType || "fixed");
+    const salaryValue = Number.parseFloat(
+      String(teacher.monthlySalary ?? "").replace(/,/g, ""),
+    );
+    setFixedSalaryDraft(Number.isFinite(salaryValue) ? salaryValue : null);
     setSalaryConfigDraft({
       salaryPerStudent: teacher.salaryPerStudent ?? null,
       attendanceThreshold: teacher.attendanceThreshold ?? 50,
@@ -796,7 +878,7 @@ const Teachers = () => {
     const { hasVisibleMonth } = getSalaryMonthBounds(teacher);
     const defaultMonth = hasVisibleMonth ? dayjs().startOf("month").format("YYYY-MM") : null;
     setSelectedCompensationMonth(defaultMonth);
-    setShowIdCard(true);
+    navigate(`/dashboard/employees/${encodeURIComponent(teacher._id)}`);
   };
 
   // Get teacher initials for avatar fallback
@@ -1016,10 +1098,69 @@ const Teachers = () => {
   };
 
   const renderCourseAndStudentTab = () => {
+    const salaryModePicker = (
+      <Card size="small" title="Salary Mode">
+        <Select
+          value={salaryModeDraft}
+          className="w-full md:max-w-md"
+          size="large"
+          onChange={setSalaryModeDraft}
+          options={[
+            { value: "fixed", label: "Fixed Monthly Salary" },
+            { value: "per_student", label: "Student Attendance Based" },
+          ]}
+          disabled={!permissions.update}
+        />
+      </Card>
+    );
+
+    if (salaryModeDraft === "fixed") {
+      return (
+        <div className="space-y-4">
+          {salaryModePicker}
+          <Card size="small" title="Fixed Monthly Salary">
+            <div className="max-w-xl space-y-4">
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                  Monthly Salary (PKR)
+                </div>
+                <InputNumber
+                  size="large"
+                  min={0}
+                  precision={2}
+                  className="!w-full"
+                  placeholder="Enter monthly fixed salary"
+                  value={fixedSalaryDraft}
+                  onChange={setFixedSalaryDraft}
+                  disabled={!permissions.update}
+                />
+              </div>
+              <div className="text-sm text-slate-500">
+                This amount is used as the teacher&apos;s monthly payroll salary.
+              </div>
+              <Button
+                type="primary"
+                size="large"
+                loading={savingSalaryConfig}
+                onClick={handleSaveFixedSalary}
+                disabled={!permissions.update}
+                className="!bg-[#01134C]"
+              >
+                Save Fixed Salary
+              </Button>
+            </div>
+          </Card>
+        </div>
+      );
+    }
+
     if (loadingTeacherCompensation) {
       return (
-        <div className="flex min-h-[320px] items-center justify-center">
-          <Spin size="large" />
+        <div className="space-y-4">
+          {salaryModePicker}
+          <div className="flex min-h-[320px] items-center justify-center">
+            <Spin size="large" />
+          </div>
         </div>
       );
     }
@@ -1027,13 +1168,16 @@ const Teachers = () => {
     if (!isCompensationResponseShape(teacherCompensation)) {
       const { hasVisibleMonth } = getSalaryMonthBounds(selectedTeacher);
       return (
-        <Empty
-          description={
-            !hasVisibleMonth
-              ? "Salary months will appear here once the employee appointment month becomes available."
-              : "Course and attendance details are not available yet"
-          }
-        />
+        <div className="space-y-4">
+          {salaryModePicker}
+          <Empty
+            description={
+              !hasVisibleMonth
+                ? "Salary months will appear here once the employee appointment month becomes available."
+                : "Course and attendance details are not available yet"
+            }
+          />
+        </div>
       );
     }
 
@@ -1172,6 +1316,7 @@ const Teachers = () => {
 
     return (
       <div className="space-y-4">
+        {salaryModePicker}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-5">
           <Card size="small">
             <div className="text-xs text-slate-500">Assigned Courses</div>
@@ -1328,6 +1473,20 @@ const Teachers = () => {
                   }))
                 }
               />
+              <div className="mb-2 mt-4 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                Deduction Note
+              </div>
+              <Input.TextArea
+                rows={2}
+                placeholder="Reason for deduction"
+                value={salaryConfigDraft.deductionNote}
+                onChange={(event) =>
+                  setSalaryConfigDraft((prev) => ({
+                    ...prev,
+                    deductionNote: event.target.value,
+                  }))
+                }
+              />
             </div>
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
@@ -1346,25 +1505,7 @@ const Teachers = () => {
                   }))
                 }
               />
-            </div>
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                Deduction Note
-              </div>
-              <Input.TextArea
-                rows={2}
-                placeholder="Reason for deduction"
-                value={salaryConfigDraft.deductionNote}
-                onChange={(event) =>
-                  setSalaryConfigDraft((prev) => ({
-                    ...prev,
-                    deductionNote: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+              <div className="mb-2 mt-4 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
                 Bonus / Extra Note
               </div>
               <Input.TextArea
@@ -1560,6 +1701,100 @@ const Teachers = () => {
     (currentPage - 1) * TEACHERS_PER_PAGE,
     currentPage * TEACHERS_PER_PAGE,
   );
+
+  if (teacherId) {
+    if (fetchingTeachers && !selectedTeacher) {
+      return (
+        <div className="flex min-h-[50vh] items-center justify-center">
+          <Spin size="large" />
+        </div>
+      );
+    }
+
+    if (!selectedTeacher || String(selectedTeacher._id) !== String(teacherId)) {
+      return (
+        <div className="space-y-4">
+          <Button onClick={() => navigate("/dashboard/employees")}>
+            Back to Employees
+          </Button>
+          <Empty description="This teacher could not be found." />
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full space-y-6">
+        <Button
+          onClick={() => navigate("/dashboard/employees")}
+          className="!rounded-lg"
+        >
+          Back to Employees
+        </Button>
+        <Card className="overflow-hidden !rounded-2xl">
+          <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-4">
+              <Avatar
+                size={76}
+                src={selectedTeacher.profilePicture || undefined}
+                icon={<UserOutlined />}
+                className="!bg-[#01134C]"
+              >
+                {getInitials(selectedTeacher.fullName)}
+              </Avatar>
+              <div>
+                <h1 className="m-0 text-2xl font-bold text-[#01134C]">
+                  {selectedTeacher.fullName}
+                </h1>
+                <div className="mt-1 text-sm text-slate-500">
+                  {selectedTeacher.designation ||
+                    selectedTeacher.majorSubject ||
+                    "Teacher"}
+                  {selectedTeacher.teacherId
+                    ? ` · ${selectedTeacher.teacherId}`
+                    : ""}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Tag color="blue">
+                    {selectedTeacher.salaryType === "per_student"
+                      ? "Student attendance based"
+                      : "Fixed monthly salary"}
+                  </Tag>
+                  {selectedTeacher.contactNo ? (
+                    <Tag>{selectedTeacher.contactNo}</Tag>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {permissions.update ? (
+              <Button
+                icon={<FaEdit />}
+                onClick={() => openEditModal(selectedTeacher)}
+              >
+                Edit Teacher
+              </Button>
+            ) : null}
+          </div>
+        </Card>
+        <Card className="!rounded-2xl">
+          <Tabs
+            defaultActiveKey="personal"
+            items={[
+              {
+                key: "personal",
+                label: "Personal Information",
+                children: renderPersonalInfoTab(),
+              },
+              {
+                key: "courses",
+                label: "Courses, Students & Salary",
+                children: renderCourseAndStudentTab(),
+              },
+            ]}
+          />
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -2140,7 +2375,7 @@ const Teachers = () => {
                   </div>
 
                   <div className="mt-2 flex items-center justify-between rounded-[10px] border border-[#e6edf7] bg-[#f8fbff] px-2 py-1.5">
-                    {permissions.print && (
+                    {permissions.view && (
                       <Button
                         type="primary"
                         icon={<FaPrint />}
@@ -2217,51 +2452,6 @@ const Teachers = () => {
           </div>
         )}
       </div>
-
-      {/* ID Card Modal - Detailed View */}
-        <Modal
-          open={showIdCard}
-          onCancel={() => {
-            setShowIdCard(false);
-            setSelectedTeacher(null);
-            setTeacherCompensation(null);
-            setSelectedCompensationMonth(null);
-            setSalaryConfigDraft({
-              salaryPerStudent: null,
-              attendanceThreshold: 50,
-          });
-        }}
-        footer={null}
-        width={980}
-        centered
-        style={{ maxWidth: "calc(100vw - 32px)" }}
-        styles={{
-          body: {
-            padding: "20px",
-            maxHeight: "calc(100vh - 120px)",
-            overflowY: "auto",
-            overflowX: "hidden",
-          },
-        }}
-      >
-        {selectedTeacher && (
-          <Tabs
-            defaultActiveKey="personal"
-            items={[
-              {
-                key: "personal",
-                label: "Personal Information",
-                children: renderPersonalInfoTab(),
-              },
-              {
-                key: "courses",
-                label: "Course & Students",
-                children: renderCourseAndStudentTab(),
-              },
-            ]}
-          />
-        )}
-      </Modal>
 
       <style>{`
         @media print {

@@ -427,14 +427,12 @@ const Payroll = () => {
                 )
               : "None",
           ],
-          [
-            "Active Students",
-            String(record.summary?.totalActiveStudents || 0),
-          ],
-          [
-            "Eligible Students",
-            String(record.summary?.eligibleStudents || 0),
-          ],
+          ...(record.salaryConfig?.salaryType === "per_student"
+            ? [
+                ["Active Students", String(record.summary?.totalActiveStudents || 0)],
+                ["Eligible Students", String(record.summary?.eligibleStudents || 0)],
+              ]
+            : []),
         ],
         headStyles: {
           fillColor: [20, 45, 120],
@@ -494,16 +492,22 @@ const Payroll = () => {
       title: "Course Count",
       dataIndex: ["summary", "totalAssignedCourses"],
       key: "courses",
+      render: (value, record) =>
+        record.salaryConfig?.salaryType === "per_student" ? value : "—",
     },
     {
       title: "Active Students",
       dataIndex: ["summary", "totalActiveStudents"],
       key: "activeStudents",
+      render: (value, record) =>
+        record.salaryConfig?.salaryType === "per_student" ? value : "—",
     },
     {
       title: "Eligible Students",
       dataIndex: ["summary", "eligibleStudents"],
       key: "eligibleStudents",
+      render: (value, record) =>
+        record.salaryConfig?.salaryType === "per_student" ? value : "—",
     },
     {
       title: "Salary Type",
@@ -880,49 +884,55 @@ const Payroll = () => {
                     )
                   : "None"}
               </Descriptions.Item>
-              <Descriptions.Item label="Eligible Students">
-                {selectedRecord.summary?.eligibleStudents || 0}
-              </Descriptions.Item>
+              {selectedRecord.salaryConfig?.salaryType === "per_student" ? (
+                <Descriptions.Item label="Eligible Students">
+                  {selectedRecord.summary?.eligibleStudents || 0}
+                </Descriptions.Item>
+              ) : null}
             </Descriptions>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-              <Card size="small">
-                <Statistic
-                  title="Carry Applied"
-                  value={selectedRecord.payroll.appliedToCarry || 0}
-                  formatter={(value) => formatCurrency(value)}
-                />
-              </Card>
-              <Card size="small">
-                <Statistic
-                  title="Current Salary Applied"
-                  value={selectedRecord.payroll.appliedToCurrent || 0}
-                  formatter={(value) => formatCurrency(value)}
-                />
-              </Card>
-              <Card size="small">
-                <Statistic
-                  title="Active Students"
-                  value={selectedRecord.summary?.totalActiveStudents || 0}
-                />
-              </Card>
-              <Card size="small">
-                <Statistic
-                  title="Courses"
-                  value={selectedRecord.summary?.totalAssignedCourses || 0}
-                />
-              </Card>
-            </div>
+            {selectedRecord.salaryConfig?.salaryType === "per_student" ? (
+              <>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <Card size="small">
+                    <Statistic
+                      title="Carry Applied"
+                      value={selectedRecord.payroll.appliedToCarry || 0}
+                      formatter={(value) => formatCurrency(value)}
+                    />
+                  </Card>
+                  <Card size="small">
+                    <Statistic
+                      title="Current Salary Applied"
+                      value={selectedRecord.payroll.appliedToCurrent || 0}
+                      formatter={(value) => formatCurrency(value)}
+                    />
+                  </Card>
+                  <Card size="small">
+                    <Statistic
+                      title="Active Students"
+                      value={selectedRecord.summary?.totalActiveStudents || 0}
+                    />
+                  </Card>
+                  <Card size="small">
+                    <Statistic
+                      title="Courses"
+                      value={selectedRecord.summary?.totalAssignedCourses || 0}
+                    />
+                  </Card>
+                </div>
 
-            <Card size="small" title="Assigned Courses">
-              <Space wrap>
-                {(selectedRecord.courses || []).map((course) => (
-                  <Tag key={course._id} color="blue">
-                    {course.courseName} ({course.activeStudents?.length || course.activeStudentCount || 0} students)
-                  </Tag>
-                ))}
-              </Space>
-            </Card>
+                <Card size="small" title="Assigned Courses">
+                  <Space wrap>
+                    {(selectedRecord.courses || []).map((course) => (
+                      <Tag key={course._id} color="blue">
+                        {course.courseName} ({course.activeStudents?.length || course.activeStudentCount || 0} students)
+                      </Tag>
+                    ))}
+                  </Space>
+                </Card>
+              </>
+            ) : null}
 
             <Card size="small" title="Payment History">
               <Table
@@ -984,12 +994,13 @@ const Payroll = () => {
               />
             </Card>
 
-            <Card size="small" title="Student Salary Breakdown">
-              <Table
-                rowKey={(student) => student.studentId}
-                pagination={{ pageSize: 6 }}
-                dataSource={selectedRecord.studentsForSalary || []}
-                columns={[
+            {selectedRecord.salaryConfig?.salaryType === "per_student" ? (
+              <Card size="small" title="Student Salary Breakdown">
+                <Table
+                  rowKey={(student) => student.studentId}
+                  pagination={{ pageSize: 6 }}
+                  dataSource={selectedRecord.studentsForSalary || []}
+                  columns={[
                   {
                     title: "Student",
                     dataIndex: "studentName",
@@ -1028,9 +1039,10 @@ const Payroll = () => {
                       </Tag>
                     ),
                   },
-                ]}
-              />
-            </Card>
+                  ]}
+                />
+              </Card>
+            ) : null}
           </div>
         ) : (
           <Text type="secondary">No payroll record selected.</Text>

@@ -897,6 +897,20 @@ const applyTeacherStudentCompensationUpdate = async (teacherId, payload = {}) =>
     throw error;
   }
 
+  if (normalizedSalaryType === "fixed" && !normalizedMonthlySalary) {
+    const error = new Error("Monthly fixed salary is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  teacher.salaryType = normalizedSalaryType;
+  teacher.monthlySalary =
+    normalizedSalaryType === "fixed" ? normalizedMonthlySalary : null;
+  teacher.salaryPerStudent =
+    normalizedSalaryType === "per_student" ? normalizedSalaryPerStudent : null;
+  teacher.attendanceThreshold = normalizedAttendanceThreshold;
+  await teacher.save();
+
   let payrollRecord = await TeacherPayroll.findOne({
     teacher: teacher._id,
     year: selectedYear,

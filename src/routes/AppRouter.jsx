@@ -93,12 +93,14 @@ function AppRouter() {
           <Route index element={<ProtectedRoute moduleKey="dashboard"><Dashboard /></ProtectedRoute>} />
           <Route path="courses" element={<ProtectedRoute moduleKey="courses"><Courses /></ProtectedRoute>} />
           <Route path="employees" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
+          <Route path="employees/:teacherId" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
           <Route path="employee-accounts" element={<Navigate to="/dashboard/super-admin?section=roles&view=users" replace />} />
           <Route path="test-studio" element={<ProtectedRoute moduleKey="test_studio"><TestStudio /></ProtectedRoute>} />
           <Route path="test-studio/create" element={<ProtectedRoute moduleKey="test_studio" action="create"><TestStudio setupMode /></ProtectedRoute>} />
           <Route path="test-studio/student/:studentId" element={<ProtectedRoute moduleKey="test_studio"><StudentTestHistory /></ProtectedRoute>} />
           <Route path="test-studio/:id" element={<ProtectedRoute moduleKey="test_studio"><TestStudio detailMode /></ProtectedRoute>} />
           <Route path="teachers" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
+          <Route path="teachers/:teacherId" element={<ProtectedRoute moduleKey="employees"><Teachers /></ProtectedRoute>} />
           <Route
             path="students"
             element={<Navigate to="/dashboard/students/all" replace />}

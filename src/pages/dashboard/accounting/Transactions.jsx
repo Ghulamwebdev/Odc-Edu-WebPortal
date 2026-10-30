@@ -141,7 +141,6 @@ const Transactions = () => {
 
   const [form] = Form.useForm();
   const watchedFormType = Form.useWatch("type", form);
-  const watchedFormName = Form.useWatch("name", form);
 
   // Detail modal state
   const [detailVisible, setDetailVisible] = useState(false);
@@ -201,7 +200,19 @@ const Transactions = () => {
   const loadPartyReferenceData = useCallback(
     async (typeList = types) => {
       try {
-        const [incomeRes, expenseRes, payrollRes] = await Promise.all([
+        const incomeTypeId = typeList.find(
+          (item) => String(item?.name || "").toLowerCase() === "income",
+        )?._id;
+        const expenseTypeId = typeList.find(
+          (item) => String(item?.name || "").toLowerCase() === "expense",
+        )?._id;
+        const [
+          incomeDuesRes,
+          expenseRes,
+          payrollRes,
+          incomeTransactionsRes,
+          expenseTransactionsRes,
+        ] = await Promise.all([
           getReceiptDuesOverview({
             status: "unpaid",
             page: 1,
@@ -213,11 +224,48 @@ const Transactions = () => {
             page: 1,
             limit: 1000,
           }),
+          incomeTypeId
+            ? getTransactions({ type: incomeTypeId, page: 1, limit: 10000 })
+            : Promise.resolve({ success: true, data: [] }),
+          expenseTypeId
+            ? getTransactions({ type: expenseTypeId, page: 1, limit: 10000 })
+            : Promise.resolve({ success: true, data: [] }),
         ]);
 
+        const incomeTransactions = buildPartyOptionMap(
+          incomeTransactionsRes?.success ? incomeTransactionsRes.data || [] : [],
+          {
+            getName: (record) => record?.name,
+            getDate: (record) => record?.paymentDate,
+            getAmount: (record) => record?.amount,
+            getHeadId: (record) => record?.head?._id || record?.head,
+            getPaymentMethodId: (record) =>
+              record?.paymentMethod?._id || record?.paymentMethod,
+            getBillReference: (record) => record?.billReference,
+            getDetails: (record) => record?.details,
+          },
+        );
+        const expenseTransactions = buildPartyOptionMap(
+          expenseTransactionsRes?.success
+            ? expenseTransactionsRes.data || []
+            : [],
+          {
+            getName: (record) => record?.name,
+            getDate: (record) => record?.paymentDate,
+            getAmount: (record) => record?.amount,
+            getHeadId: (record) => record?.head?._id || record?.head,
+            getPaymentMethodId: (record) =>
+              record?.paymentMethod?._id || record?.paymentMethod,
+            getBillReference: (record) => record?.billReference,
+            getDetails: (record) => record?.details,
+          },
+        );
+
         setIncomePartyOptions(
-          incomeRes?.success
-            ? (incomeRes.data || []).map((row) => {
+          [
+            ...incomeTransactions,
+            ...(incomeDuesRes?.success
+              ? (incomeDuesRes.data || []).map((row) => {
                 const studentName = row?.student?.studentName || "Unknown";
                 const installmentSuffix = row?.installmentNumber
                   ? `Inst. #${row.installmentNumber}`
@@ -244,11 +292,16 @@ const Transactions = () => {
                   dueRow: row,
                 };
               })
-            : [],
+              : []),
+          ].filter(
+            (option, index, options) =>
+              options.findIndex((item) => item.value === option.value) === index,
+          ),
         );
 
         setExpensePartyOptions(
           [
+            ...expenseTransactions,
             ...((expenseRes?.success ? expenseRes.data || [] : []).map((record) => {
               const payeeName = String(record?.payeeName || "").trim();
               const expenseHead =
@@ -289,7 +342,10 @@ const Transactions = () => {
                 year: item?.month?.year,
                 month: item?.month?.month,
               }))),
-          ],
+          ].filter(
+            (option, index, options) =>
+              options.findIndex((item) => item.value === option.value) === index,
+          ),
         );
       } catch (error) {
         console.error("Failed to load transaction party references:", error);
@@ -351,18 +407,12 @@ const Transactions = () => {
         amount: partyMeta.amount,
         paymentMethod: getDefaultCashMethodId() || partyMeta.paymentMethodId,
         paymentDate: partyMeta.paymentDate ? dayjs(partyMeta.paymentDate) : dayjs(),
+        head: resolvedHeadId,
       };
 
-      if (resolvedHeadId) {
-        nextFields.head = resolvedHeadId;
-      }
-
-      if (partyMeta.billReference && !editingTxn) {
-        nextFields.billReference = partyMeta.billReference;
-      }
-
-      if (partyMeta.details && !editingTxn) {
-        nextFields.details = partyMeta.details;
+      if (!editingTxn) {
+        nextFields.billReference = partyMeta.billReference || "";
+        nextFields.details = partyMeta.details || "";
       }
 
       setSelectedPartyMeta(partyMeta);
@@ -605,35 +655,6 @@ const Transactions = () => {
     setSelectedPartyMeta(null);
     form.resetFields();
   };
-
-  useEffect(() => {
-    if (editingTxn) {
-      setSelectedPartyMeta(null);
-      return;
-    }
-
-    if (!watchedFormType) {
-      setSelectedPartyMeta(null);
-      return;
-    }
-
-    const currentName = String(watchedFormName || "").trim();
-    if (!currentName) {
-      setSelectedPartyMeta(null);
-      return;
-    }
-
-    const matchedParty = getPartyOptionsForType(watchedFormType).find(
-      (item) => item.value === currentName,
-    );
-
-    setSelectedPartyMeta(matchedParty || null);
-  }, [editingTxn, watchedFormType, watchedFormName, getPartyOptionsForType]);
-
-  useEffect(() => {
-    if (editingTxn || !selectedPartyMeta) return;
-    applyPartySelection(selectedPartyMeta);
-  }, [editingTxn, selectedPartyMeta, applyPartySelection]);
 
   // ── Submit ─────────────────────────────────────────────────
   const handleSubmit = async () => {
@@ -1513,7 +1534,7 @@ const Transactions = () => {
               disabled={!watchedFormType}
               onSelect={handlePartySelection}
               onChange={(value) => {
-                if (!value) {
+                if (!value || value !== selectedPartyMeta?.value) {
                   setSelectedPartyMeta(null);
                 }
               }}
@@ -1609,10 +1630,12 @@ const Transactions = () => {
                   style={{ width: "100%" }}
                   min={0}
                   placeholder="0"
-                  formatter={(v) =>
-                    `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                  formatter={(value) =>
+                    value === undefined || value === null || value === ""
+                      ? ""
+                      : String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
                   }
-                  parser={(v) => v.replace(/,/g, "")}
+                  parser={(value) => String(value || "").replace(/,/g, "")}
                 />
               </Form.Item>
             </Col>
