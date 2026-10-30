@@ -16,18 +16,27 @@ export const markQrAttendance = async ({ date, studentId, studentCode }) => {
   return response.data;
 };
 
-export const enrollFaceAttendance = async ({ studentId, faceHash, imageData, samplesCount }) => {
+export const enrollFaceAttendance = async ({
+  studentId,
+  faceDescriptors,
+}) => {
   const response = await api.post("/attendance/face/enroll", {
     studentId,
-    faceHash,
-    imageData,
-    samplesCount,
+    faceDescriptors,
   });
   return response.data;
 };
 
-export const markFaceAttendance = async ({ batchId, date, faceHash, faceHashes }) => {
-  const response = await api.post("/attendance/face/mark", { batchId, date, faceHash, faceHashes });
+export const markFaceAttendance = async ({
+  batchId,
+  date,
+  faceDescriptor,
+}) => {
+  const response = await api.post("/attendance/face/mark", {
+    batchId,
+    date,
+    faceDescriptor,
+  });
   return response.data;
 };
 

@@ -249,7 +249,11 @@ const normalizeInstallments = ({
   return rebalanceInstallmentsToTarget(normalized, targetTotal);
 };
 
-const mergeInstallmentsPreservingPaid = (existingInstallments = [], updatedInstallments = []) => {
+const mergeInstallmentsPreservingPaid = (
+  existingInstallments = [],
+  updatedInstallments = [],
+  targetTotal,
+) => {
   const paidInstallments = (Array.isArray(existingInstallments) ? existingInstallments : [])
     .filter(
       (installment) =>
@@ -280,9 +284,103 @@ const mergeInstallmentsPreservingPaid = (existingInstallments = [], updatedInsta
     }
   }
 
-  return merged.sort(
+  const sortedInstallments = merged.sort(
     (left, right) => Number(left.installmentNumber) - Number(right.installmentNumber),
   );
+
+  if (!hasDefinedValue(targetTotal)) return sortedInstallments;
+
+  const paidNumbers = new Set(paidInstallments.map((item) => item.installmentNumber));
+  const paidTotal = getInstallmentsTotal(
+    sortedInstallments.filter((item) =>
+      paidNumbers.has(Number(item.installmentNumber)),
+    ),
+  );
+  const targetUnpaidTotal = round2(Math.max(0, Number(targetTotal) - paidTotal));
+  const unpaidInstallments = sortedInstallments.filter(
+    (item) => !paidNumbers.has(Number(item.installmentNumber)),
+  );
+
+  if (unpaidInstallments.length === 0 && targetUnpaidTotal > 0) {
+    const lastInstallment = sortedInstallments[sortedInstallments.length - 1];
+    sortedInstallments.push({
+      installmentNumber: Number(lastInstallment?.installmentNumber || 0) + 1,
+      description: "Additional Installment",
+      feeComponents: {
+        admissionFee: 0,
+        courseFee: targetUnpaidTotal,
+        certificateFee: 0,
+        examFee: 0,
+        registrationFee: 0,
+        practicalFee: 0,
+        otherFee: 0,
+      },
+      amount: targetUnpaidTotal,
+      dueDate: addMonths(lastInstallment?.dueDate || new Date(), 1),
+      status: "Pending",
+      paidAmount: 0,
+    });
+    return sortedInstallments;
+  }
+
+  const currentUnpaidTotal = getInstallmentsTotal(unpaidInstallments);
+  let assignedAmount = 0;
+  const lastUnpaid = unpaidInstallments[unpaidInstallments.length - 1];
+
+  sortedInstallments.forEach((installment) => {
+    if (paidNumbers.has(Number(installment.installmentNumber))) return;
+
+    const isLastUnpaid = installment === lastUnpaid;
+    const amount =
+      currentUnpaidTotal > 0 && !isLastUnpaid
+        ? round2(
+            (Number(installment.amount || 0) / currentUnpaidTotal) *
+              targetUnpaidTotal,
+          )
+        : isLastUnpaid
+          ? round2(targetUnpaidTotal - assignedAmount)
+          : 0;
+    assignedAmount = round2(assignedAmount + amount);
+
+    const components = Object.entries(installment.feeComponents || {}).filter(
+      ([key]) =>
+        [
+          "admissionFee",
+          "courseFee",
+          "certificateFee",
+          "examFee",
+          "registrationFee",
+          "practicalFee",
+          "otherFee",
+        ].includes(key),
+    );
+    const componentTotal = round2(
+      components.reduce((sum, [, value]) => sum + Number(value || 0), 0),
+    );
+    let assignedComponents = 0;
+    const feeComponents = Object.fromEntries(
+      components.map(([key, value], index) => {
+        const isLastComponent = index === components.length - 1;
+        const componentAmount =
+          componentTotal > 0 && !isLastComponent
+            ? round2((Number(value || 0) / componentTotal) * amount)
+            : isLastComponent
+              ? round2(amount - assignedComponents)
+              : 0;
+        assignedComponents = round2(assignedComponents + componentAmount);
+        return [key, componentAmount];
+      }),
+    );
+
+    if (components.length === 0) {
+      feeComponents.courseFee = amount;
+    }
+
+    installment.amount = amount;
+    installment.feeComponents = feeComponents;
+  });
+
+  return sortedInstallments;
 };
 
 // Create enrollment for a student
@@ -808,13 +906,17 @@ export const updateEnrollmentStatus = async (req, res) => {
       ? mergeInstallmentsPreservingPaid(
           existingFeeStructure?.installments,
           normalizedInstallments,
+          finalFee ?? totalFee,
         )
       : [];
+    const requestedTotal = hasDefinedValue(finalFee ?? totalFee)
+      ? round2(finalFee ?? totalFee)
+      : undefined;
     const resolvedTotal = mergedInstallments.length
       ? getInstallmentsTotal(mergedInstallments)
-      : round2(finalFee ?? totalFee ?? 0);
+      : requestedTotal ?? 0;
     if (finalFee !== undefined || totalFee !== undefined) {
-      feeStructureUpdate.totalFee = resolvedTotal;
+      feeStructureUpdate.totalFee = requestedTotal ?? resolvedTotal;
     }
     if (paymentPlanType) feeStructureUpdate.paymentPlanType = paymentPlanType;
     if (numberOfInstallments !== undefined) {

@@ -4,6 +4,17 @@ import EnrollmentSchema from "../modules/enrollmentModule.js";
 import TeacherSchema from "../modules/teacherModule.js";
 import HolidaySchema from "../modules/holidayModule.js";
 import AdmissionSchema from "../modules/AdmissionModule.js";
+import {
+  assertFaceEncryptionConfigured,
+  decryptFaceDescriptors,
+  encryptFaceDescriptors,
+  FACE_MODEL_VERSION,
+  getFaceDuplicateThreshold,
+  getFaceDescriptorDistance,
+  getFaceMatchMinMargin,
+  getFaceMatchThreshold,
+  normalizeFaceDescriptors,
+} from "../utils/faceRecognition.js";
 
 // ─── Helper: map batch.days string → JS day-of-week numbers ──────────────────
 const batchDaysToDowSet = (days) => {
@@ -75,29 +86,7 @@ const checkHoliday = async (date, batchId) => {
 };
 
 const ACTIVE_QR_ENROLLMENT_STATUSES = ["Active", "Enrolled", "On Hold"];
-const FACE_MATCH_MAX_DISTANCE = 96;
-const ALL_BATCHES_VALUE = "__all_batches__";
-
-const isValidFaceHash = (hash) =>
-  typeof hash === "string" && /^[01]{256}$/.test(hash.trim());
-
-const getHashDistance = (a, b) => {
-  if (!isValidFaceHash(a) || !isValidFaceHash(b)) return Number.POSITIVE_INFINITY;
-  let distance = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) distance += 1;
-  }
-  return distance;
-};
-
-const normalizeFaceHashes = (faceHash, faceHashes = []) =>
-  Array.from(
-    new Set(
-      [faceHash, ...(Array.isArray(faceHashes) ? faceHashes : [])]
-        .filter(isValidFaceHash)
-        .map((hash) => hash.trim()),
-    ),
-  );
+const ACTIVE_FACE_ENROLLMENT_STATUSES = ["Active", "Enrolled"];
 
 const findQrEligibleStudentEnrollments = async ({ studentId, studentCode, attendanceDate }) => {
   const enrollments = await EnrollmentSchema.find({
@@ -265,33 +254,89 @@ const markQrAttendance = async (req, res) => {
 
 const enrollFaceAttendance = async (req, res) => {
   try {
-    const { studentId, faceHash, imageData, samplesCount } = req.body || {};
-
-    if (!studentId || !isValidFaceHash(faceHash) || !imageData) {
+    const { studentId, faceDescriptors } = req.body || {};
+    const normalizedDescriptors = normalizeFaceDescriptors(faceDescriptors);
+    if (!studentId || !normalizedDescriptors) {
       return res.status(400).json({
         success: false,
-        message: "studentId, a valid faceHash, and imageData are required",
+        message:
+          "studentId and 1 to 5 valid 128-value face descriptors are required",
       });
     }
 
-    const normalizedFaceHash = faceHash.trim();
+    assertFaceEncryptionConfigured();
+    const student = await AdmissionSchema.findById(studentId)
+      .select("studentName registrationNo gender profilePicture mobileNumber isActive")
+      .lean();
+    if (!student) {
+      return res.status(404).json({ success: false, message: "Student not found" });
+    }
+    if (student.isActive === false) {
+      return res.status(409).json({
+        success: false,
+        code: "STUDENT_INACTIVE",
+        message: "Face registration is unavailable for an inactive student.",
+      });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const activeEnrollments = await EnrollmentSchema.find({
+      student: studentId,
+      status: { $in: ACTIVE_FACE_ENROLLMENT_STATUSES },
+      enrollmentDate: { $lte: today },
+    })
+      .populate("batch", "status isActive startDate endDate")
+      .lean();
+    if (
+      !activeEnrollments.some(
+        (enrollment) =>
+          enrollment.batch?.status === "Active" &&
+          enrollment.batch.isActive !== false &&
+          isWithinBatchDateRange(today, enrollment.batch),
+      )
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "FACE_NO_ACTIVE_ENROLLMENT",
+        message:
+          "Face registration requires an active course enrollment in an active batch.",
+      });
+    }
+
     const enrolledStudents = await AdmissionSchema.find({
       _id: { $ne: studentId },
       "faceAttendance.enabled": true,
-      "faceAttendance.faceHash": { $exists: true, $ne: "" },
+      "faceAttendance.modelVersion": FACE_MODEL_VERSION,
+      "faceAttendance.descriptorsEncrypted": { $exists: true, $ne: "" },
     })
-      .select("studentName registrationNo faceAttendance.faceHash")
+      .select(
+        "studentName registrationNo faceAttendance.modelVersion +faceAttendance.descriptorsEncrypted",
+      )
       .lean();
 
-    const duplicateStudent = enrolledStudents
-      .map((student) => ({
-        student,
-        distance: getHashDistance(normalizedFaceHash, student.faceAttendance?.faceHash),
-      }))
-      .filter((candidate) => Number.isFinite(candidate.distance))
-      .sort((a, b) => a.distance - b.distance)[0];
+    const duplicateDistance = getFaceDuplicateThreshold();
+    let duplicateStudent = null;
+    for (const enrolledStudent of enrolledStudents) {
+      const savedDescriptors = decryptFaceDescriptors(
+        enrolledStudent.faceAttendance?.descriptorsEncrypted,
+      );
+      const distance = Math.min(
+        ...normalizedDescriptors.flatMap((descriptor) =>
+          savedDescriptors.map((savedDescriptor) =>
+            getFaceDescriptorDistance(descriptor, savedDescriptor),
+          ),
+        ),
+      );
+      if (!duplicateStudent || distance < duplicateStudent.distance) {
+        duplicateStudent = { student: enrolledStudent, distance };
+      }
+    }
 
-    if (duplicateStudent && duplicateStudent.distance <= 24) {
+    if (
+      duplicateStudent &&
+      duplicateStudent.distance <= duplicateDistance
+    ) {
       return res.status(409).json({
         success: false,
         code: "FACE_ALREADY_ENROLLED",
@@ -306,25 +351,32 @@ const enrollFaceAttendance = async (req, res) => {
       });
     }
 
-    const student = await AdmissionSchema.findByIdAndUpdate(
+    const updatedStudent = await AdmissionSchema.findByIdAndUpdate(
       studentId,
       {
         $set: {
           "faceAttendance.enabled": true,
-          "faceAttendance.imageData": imageData,
-          "faceAttendance.faceHash": normalizedFaceHash,
-          "faceAttendance.samplesCount": Math.max(Number(samplesCount) || 1, 1),
-          "faceAttendance.updatedBy": req.user?._id,
+          "faceAttendance.descriptorsEncrypted":
+            encryptFaceDescriptors(normalizedDescriptors),
+          "faceAttendance.modelVersion": FACE_MODEL_VERSION,
+          "faceAttendance.samplesCount": normalizedDescriptors.length,
+          "faceAttendance.updatedBy": req.user?._id || req.user?.id,
           "faceAttendance.updatedAt": new Date(),
+        },
+        $unset: {
+          "faceAttendance.imageData": 1,
+          "faceAttendance.faceHash": 1,
+          "faceAttendance.faceHashV2": 1,
         },
       },
       {
         new: true,
-        select: "studentName registrationNo gender profilePicture mobileNumber faceAttendance",
+        select:
+          "studentName registrationNo gender profilePicture mobileNumber faceAttendance.enabled faceAttendance.modelVersion faceAttendance.samplesCount faceAttendance.updatedAt",
       },
     ).lean();
 
-    if (!student) {
+    if (!updatedStudent) {
       return res.status(404).json({ success: false, message: "Student not found" });
     }
 
@@ -333,236 +385,268 @@ const enrollFaceAttendance = async (req, res) => {
       message: "Face attendance setup saved successfully.",
       data: {
         student: {
-          _id: student._id,
-          name: student.studentName,
-          registrationNo: student.registrationNo,
-          gender: student.gender,
-          profilePicture: student.profilePicture || "",
-          mobileNumber: student.mobileNumber || "",
-          faceAttendance: student.faceAttendance,
+          _id: updatedStudent._id,
+          name: updatedStudent.studentName,
+          registrationNo: updatedStudent.registrationNo,
+          gender: updatedStudent.gender,
+          profilePicture: updatedStudent.profilePicture || "",
+          mobileNumber: updatedStudent.mobileNumber || "",
+          faceAttendance: updatedStudent.faceAttendance,
         },
       },
     });
   } catch (error) {
     console.error("enrollFaceAttendance error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error?.code === "FACE_ENCRYPTION_KEY_MISSING" ? 503 : 500).json({
+      success: false,
+      code: error?.code || "FACE_ENROLLMENT_FAILED",
+      message: error?.message || "Unable to save face registration.",
+    });
   }
 };
 
 const markFaceAttendance = async (req, res) => {
   try {
-    const { batchId, date, faceHash, faceHashes } = req.body || {};
-    const normalizedFaceHashes = normalizeFaceHashes(faceHash, faceHashes);
-
-    if (!batchId || !date || !normalizedFaceHashes.length) {
+    const { batchId, date, faceDescriptor } = req.body || {};
+    const [normalizedDescriptor] =
+      normalizeFaceDescriptors([faceDescriptor]) || [];
+    if (!batchId || !date || !normalizedDescriptor) {
       return res.status(400).json({
         success: false,
-        message: "batchId, date, and a valid face hash are required",
+        message: "batchId, date, and one valid face descriptor are required",
       });
     }
 
-    const isAllBatches = batchId === ALL_BATCHES_VALUE;
-
     const attendanceDate = new Date(date);
+    if (Number.isNaN(attendanceDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid attendance date is required.",
+      });
+    }
     attendanceDate.setHours(0, 0, 0, 0);
 
-    const enrollmentFilter = {
-      status: { $in: ACTIVE_QR_ENROLLMENT_STATUSES },
-    };
-    if (!isAllBatches) enrollmentFilter.batch = batchId;
-
-    const rawEnrollments = await EnrollmentSchema.find(enrollmentFilter)
-      .populate(
-        "student",
-        "studentName registrationNo gender profilePicture mobileNumber faceAttendance",
-      )
-      .populate("batch", "batchName batchCode days shift hoursPerDay startDate endDate")
-      .lean();
-
-    if (!isAllBatches && !rawEnrollments.length) {
-      const batch = await BatchSchema.findById(batchId).lean();
-      if (!batch) {
+    if (batchId !== "__all_batches__") {
+      const selectedBatch = await BatchSchema.findById(batchId).select("_id").lean();
+      if (!selectedBatch) {
         return res.status(404).json({ success: false, message: "Batch not found" });
       }
     }
 
-    const enrollments = [];
-    for (const enrollment of rawEnrollments) {
-      const batch = enrollment.batch;
-      if (!enrollment.student || !batch) continue;
-      if (!isWithinBatchDateRange(attendanceDate, batch)) continue;
-      if (!isWorkingDay(attendanceDate, batch.days)) continue;
+    assertFaceEncryptionConfigured();
+    const registeredStudents = await AdmissionSchema.find({
+      isActive: { $ne: false },
+      "faceAttendance.enabled": true,
+      "faceAttendance.modelVersion": FACE_MODEL_VERSION,
+      "faceAttendance.descriptorsEncrypted": { $exists: true, $ne: "" },
+    })
+      .select(
+        "studentName registrationNo gender profilePicture mobileNumber faceAttendance.modelVersion +faceAttendance.descriptorsEncrypted",
+      )
+      .lean();
 
-      const holiday = await checkHoliday(attendanceDate, batch._id);
-      if (holiday && holiday.type === "academy") continue;
-
-      enrollments.push(enrollment);
-    }
-
-    if (!enrollments.length) {
-      return res.status(400).json({
-        success: false,
-        code: "FACE_ATTENDANCE_CLOSED",
-        message: isAllBatches
-          ? "No active working batch was found for face attendance on the selected date."
-          : "This batch is not active, scheduled, or open for face attendance on the selected date.",
-      });
-    }
-
-    const candidateMap = new Map();
-    enrollments
-      .filter((enrollment) => enrollment.student?.faceAttendance?.enabled)
-      .filter((enrollment) => isValidFaceHash(enrollment.student.faceAttendance.faceHash))
-      .forEach((enrollment) => {
-        const storedHash = enrollment.student.faceAttendance.faceHash;
-        const distance = Math.min(
-          ...normalizedFaceHashes.map((hash) => getHashDistance(hash, storedHash)),
-        );
-        const studentKey = String(enrollment.student._id);
-        const candidate = {
-          enrollment,
-          distance,
-          confidence: Math.round((1 - distance / 256) * 100),
-        };
-        const existing = candidateMap.get(studentKey);
-        if (!existing || candidate.distance < existing.distance) {
-          candidateMap.set(studentKey, candidate);
-        }
-      });
-
-    const candidates = Array.from(candidateMap.values()).sort((a, b) => a.distance - b.distance);
-
-    if (!candidates.length) {
+    if (!registeredStudents.length) {
       return res.status(404).json({
         success: false,
         code: "FACE_NOT_SETUP",
-        message: "No face attendance setup was found for students in this batch.",
+        message:
+          "No compatible face registration was found. Set up or refresh the student's face first.",
       });
     }
 
+    const candidates = registeredStudents.map((student) => {
+      const savedDescriptors = decryptFaceDescriptors(
+        student.faceAttendance?.descriptorsEncrypted,
+      );
+      return {
+        student,
+        distance: Math.min(
+          ...savedDescriptors.map((savedDescriptor) =>
+            getFaceDescriptorDistance(normalizedDescriptor, savedDescriptor),
+          ),
+        ),
+      };
+    }).sort((left, right) => left.distance - right.distance);
+
     const bestMatch = candidates[0];
     const secondMatch = candidates[1];
+    const maxDistance = getFaceMatchThreshold();
+    const minMargin = getFaceMatchMinMargin();
 
     if (
-      bestMatch.distance > FACE_MATCH_MAX_DISTANCE ||
-      (secondMatch && secondMatch.distance - bestMatch.distance < 8)
+      bestMatch.distance > maxDistance ||
+      (secondMatch &&
+        secondMatch.distance - bestMatch.distance < minMargin)
     ) {
       return res.status(422).json({
         success: false,
         code: "FACE_MATCH_NOT_CONFIDENT",
         message:
-          "Face was detected, but the match is not confident enough. Please try better lighting or use manual attendance.",
+          "A face was detected, but no registered student matched confidently. Improve the lighting, center the face, or verify the student's face setup.",
         data: {
-          bestConfidence: bestMatch.confidence,
+          bestDistance: Number(bestMatch.distance.toFixed(4)),
         },
       });
     }
 
-    const student = bestMatch.enrollment.student;
-    const targetEnrollments = enrollments.filter(
-      (enrollment) => String(enrollment.student?._id || "") === String(student._id),
-    );
-    const targetBatchIds = targetEnrollments.map((enrollment) => enrollment.batch._id);
-
-    const existingRecords = await AttendanceSchema.find({
-      batch: { $in: targetBatchIds },
-      date: attendanceDate,
-      person: student._id,
-      personType: "student",
-    }).lean();
-
-    const alreadyPresentBatchIds = new Set(
-      existingRecords
-        .filter((record) => record.status === "Present")
-        .map((record) => String(record.batch)),
-    );
-    const enrollmentsToMark = targetEnrollments.filter(
-      (enrollment) => !alreadyPresentBatchIds.has(String(enrollment.batch._id)),
+    const student = bestMatch.student;
+    const activeEnrollments = await EnrollmentSchema.find({
+      student: student._id,
+      status: { $in: ACTIVE_FACE_ENROLLMENT_STATUSES },
+      enrollmentDate: { $lte: attendanceDate },
+    })
+      .populate(
+        "batch",
+        "batchName batchCode days shift hoursPerDay startDate endDate status isActive",
+      )
+      .populate("course", "courseName")
+      .lean();
+    const validEnrollments = activeEnrollments.filter(
+      (enrollment) =>
+        enrollment.batch &&
+        enrollment.batch.status === "Active" &&
+        enrollment.batch.isActive !== false &&
+        isWithinBatchDateRange(attendanceDate, enrollment.batch),
     );
 
-    if (!enrollmentsToMark.length) {
+    if (!validEnrollments.length) {
       return res.status(409).json({
         success: false,
-        code: "ATTENDANCE_ALREADY_MARKED",
-        message: isAllBatches
-          ? "Attendance already marked Present for this student in all active batches today."
-          : "Attendance already marked Present for this student today.",
-        data: {
-          student: {
-            _id: student._id,
-            name: student.studentName,
-            registrationNo: student.registrationNo,
-            gender: student.gender,
-            profilePicture: student.profilePicture || "",
-            mobileNumber: student.mobileNumber || "",
-          },
-          confidence: bestMatch.confidence,
-          batchesMarked: targetEnrollments.map((enrollment) => ({
-            _id: enrollment.batch._id,
-            batchName: enrollment.batch.batchName,
-            batchCode: enrollment.batch.batchCode,
-            shift: enrollment.batch.shift || "",
-          })),
-        },
+        code: "FACE_NO_ACTIVE_ENROLLMENT",
+        message:
+          "This student was recognized, but has no active course or batch enrollment.",
       });
     }
 
-    await AttendanceSchema.bulkWrite(
-      enrollmentsToMark.map((enrollment) => ({
-        updateOne: {
-          filter: {
-            batch: enrollment.batch._id,
-            date: attendanceDate,
-            person: student._id,
-          },
-          update: {
-            $set: {
-              batch: enrollment.batch._id,
-              date: attendanceDate,
-              person: student._id,
-              personModel: "Admission",
-              personType: "student",
-              status: "Present",
-              notes: `Marked via face attendance (${bestMatch.confidence}% confidence)`,
-              method: "face",
-              markedBy: req.user?._id,
-            },
-          },
-          upsert: true,
-        },
-      })),
-      { ordered: false },
-    );
+    const eligibleEnrollments = [];
+    for (const enrollment of validEnrollments) {
+      if (!isWorkingDay(attendanceDate, enrollment.batch.days)) continue;
+      const holiday = await checkHoliday(attendanceDate, enrollment.batch._id);
+      if (!holiday || holiday.type !== "academy") {
+        eligibleEnrollments.push(enrollment);
+      }
+    }
 
-    const batchesMarked = enrollmentsToMark.map((enrollment) => ({
+    if (!eligibleEnrollments.length) {
+      return res.status(400).json({
+        success: false,
+        code: "FACE_ATTENDANCE_CLOSED",
+        message:
+          "The student's active batches are not scheduled for attendance on this date or are closed for an academy holiday.",
+      });
+    }
+
+    const confidence = Math.max(
+      0,
+      Math.round((1 - bestMatch.distance / maxDistance) * 100),
+    );
+    const batchesMarked = eligibleEnrollments.map((enrollment) => ({
       _id: enrollment.batch._id,
       batchName: enrollment.batch.batchName,
       batchCode: enrollment.batch.batchCode,
+      courseName: enrollment.course?.courseName || "",
       shift: enrollment.batch.shift || "",
     }));
+    const alreadyMarkedBatches = [];
+    const newlyMarkedBatches = [];
+    const attendanceRecords = [];
+
+    for (const enrollment of eligibleEnrollments) {
+      const batch = enrollment.batch;
+      const filter = {
+        batch: batch._id,
+        date: attendanceDate,
+        person: student._id,
+        personType: "student",
+      };
+      let record = await AttendanceSchema.findOne(filter)
+        .select("batch status method date createdAt")
+        .lean();
+      let wasAlreadyMarked = !!record;
+
+      if (!record) {
+        try {
+          record = await AttendanceSchema.create({
+            ...filter,
+            personModel: "Admission",
+            status: "Present",
+            notes: `Marked via face attendance (match score ${confidence}%)`,
+            method: "face",
+            markedBy: req.user?._id || req.user?.id,
+          });
+        } catch (error) {
+          if (error?.code !== 11000) throw error;
+          record = await AttendanceSchema.findOne(filter)
+            .select("batch status method date createdAt")
+            .lean();
+          if (!record) throw error;
+          wasAlreadyMarked = true;
+        }
+      }
+
+      if (wasAlreadyMarked) {
+        alreadyMarkedBatches.push(
+          batchesMarked.find((item) => String(item._id) === String(batch._id)),
+        );
+      } else {
+        newlyMarkedBatches.push(
+          batchesMarked.find((item) => String(item._id) === String(batch._id)),
+        );
+      }
+
+      attendanceRecords.push({
+        batch: String(record.batch),
+        batchName: batch.batchName,
+        courseName: enrollment.course?.courseName || "",
+        date: record.date,
+        status: record.status,
+        method: record.method,
+        createdAt: record.createdAt,
+      });
+    }
+
+    const data = {
+      student: {
+        _id: student._id,
+        name: student.studentName,
+        registrationNo: student.registrationNo,
+        gender: student.gender,
+        profilePicture: student.profilePicture || "",
+        mobileNumber: student.mobileNumber || "",
+      },
+      batchesMarked,
+      newlyMarkedBatches,
+      alreadyMarkedBatches,
+      attendanceRecords,
+      confidence,
+      matchDistance: Number(bestMatch.distance.toFixed(4)),
+    };
+
+    if (!newlyMarkedBatches.length) {
+      return res.status(409).json({
+        success: false,
+        code: "ATTENDANCE_ALREADY_MARKED",
+        message: "Attendance already exists for this student in all eligible batches.",
+        data,
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: batchesMarked.length > 1
-        ? "Face attendance marked successfully for all active batches."
-        : "Face attendance marked successfully.",
-      data: {
-        student: {
-          _id: student._id,
-          name: student.studentName,
-          registrationNo: student.registrationNo,
-          gender: student.gender,
-          profilePicture: student.profilePicture || "",
-          mobileNumber: student.mobileNumber || "",
-        },
-        batch: batchesMarked[0] || null,
-        batchesMarked,
-        confidence: bestMatch.confidence,
-      },
+      message: alreadyMarkedBatches.length
+        ? "Attendance marked for the remaining active batches."
+        : batchesMarked.length > 1
+          ? "Face attendance marked successfully for all active batches."
+          : "Face attendance marked successfully.",
+      data,
     });
   } catch (error) {
     console.error("markFaceAttendance error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error?.code === "FACE_ENCRYPTION_KEY_MISSING" ? 503 : 500).json({
+      success: false,
+      code: error?.code || "FACE_ATTENDANCE_FAILED",
+      message: error?.message || "Unable to complete face attendance.",
+    });
   }
 };
 
@@ -722,7 +806,10 @@ const getBatchMembers = async (req, res) => {
     const enrollments = await EnrollmentSchema.find({
       batch: batchId,
     })
-      .populate("student", "studentName registrationNo gender profilePicture mobileNumber faceAttendance")
+      .populate(
+        "student",
+        "studentName registrationNo gender profilePicture mobileNumber faceAttendance.enabled faceAttendance.modelVersion faceAttendance.updatedAt faceAttendance.samplesCount",
+      )
       .lean();
 
     console.log(`[Attendance] Batch: ${batchId} | Enrollments found: ${enrollments.length}`);
@@ -738,7 +825,9 @@ const getBatchMembers = async (req, res) => {
         mobileNumber: e.student.mobileNumber || "",
         faceAttendance: {
           enabled: !!e.student.faceAttendance?.enabled,
-          imageData: e.student.faceAttendance?.imageData || "",
+          modelVersion: e.student.faceAttendance?.modelVersion || "",
+          matcherVersion:
+            e.student.faceAttendance?.modelVersion === FACE_MODEL_VERSION ? 3 : 1,
           updatedAt: e.student.faceAttendance?.updatedAt || null,
           samplesCount: e.student.faceAttendance?.samplesCount || 0,
         },

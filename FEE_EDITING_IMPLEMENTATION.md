@@ -399,6 +399,15 @@ db.feestructures.findOne({ _id: ObjectId("...") })
 ✅ **Validation** - Prevents negative fees  
 ✅ **Logging** - Console logs track data flow for debugging  
 
+### Editing an assigned course
+
+When an administrator changes a fee or the installment count on an existing
+enrollment, the installment schedule is regenerated from the updated values.
+Additional-fee installment rows are excluded from the base installment count
+when the form is reopened, so those rows are not duplicated on the next save.
+Previously paid installments are retained; the unpaid schedule is adjusted to
+the revised total and the updated fee structure is returned to the student view.
+
 ---
 
 ## Troubleshooting

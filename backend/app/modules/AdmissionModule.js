@@ -246,8 +246,26 @@ const AdmissionSchema = new mongoose.Schema(
       imageData: {
         type: String, // Base64 enrollment capture used for admin review
         default: "",
+        select: false,
       },
       faceHash: {
+        type: String,
+        default: "",
+        trim: true,
+        select: false,
+      },
+      faceHashV2: {
+        type: String,
+        default: "",
+        trim: true,
+        select: false,
+      },
+      descriptorsEncrypted: {
+        type: String,
+        default: "",
+        select: false,
+      },
+      modelVersion: {
         type: String,
         default: "",
         trim: true,

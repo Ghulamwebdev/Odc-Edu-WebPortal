@@ -27,8 +27,10 @@ import { startTestStudioScheduler } from "./app/jobs/testStudioScheduler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const localEnvPath = path.join(__dirname, ".env.local");
 const envPath = path.join(__dirname, ".env");
 
+dotenv.config({ path: localEnvPath });
 dotenv.config({ path: envPath });
 
 const app = express();

@@ -126,6 +126,12 @@ const buildAdditionalFeesFromFeeStructure = (feeStructure = {}) => {
   return rows;
 };
 
+const getAdditionalFeeInstallmentCount = (rows = []) =>
+  sanitizeAdditionalFees(rows).reduce(
+    (count, fee) => count + (fee.paymentMode === "two_installments" ? 2 : 1),
+    0,
+  );
+
 const buildDistributedValues = (amount, count) => {
   const safeAmount = round2(amount);
   const safeCount = Math.max(1, Math.min(24, Number(count) || 1));
@@ -498,6 +504,14 @@ const CourseAssignmentForm = ({
       setIsEditMode(true);
       const enrollment = editingEnrollment;
       const fs = enrollment.feeStructure;
+      const restoredAdditionalFees = buildAdditionalFeesFromFeeStructure(fs);
+      const storedInstallmentCount =
+        fs?.installments?.length || fs?.numberOfInstallments || 2;
+      const baseInstallmentCount = Math.max(
+        1,
+        storedInstallmentCount -
+          getAdditionalFeeInstallmentCount(restoredAdditionalFees),
+      );
 
       form.resetFields();
       form.setFieldsValue({
@@ -508,7 +522,7 @@ const CourseAssignmentForm = ({
         batchId: enrollment.batch?._id || null,
         paymentPlanType: fs?.paymentPlanType || "custom",
         discountPercentage: fs?.discountPercentage || 0,
-        numberOfInstallments: fs?.numberOfInstallments || 2,
+        numberOfInstallments: baseInstallmentCount,
       });
 
       userChangedInstallmentInputsRef.current = false;
@@ -528,7 +542,6 @@ const CourseAssignmentForm = ({
         certificateFee: fs?.certificateFee ?? null,
       });
 
-      const restoredAdditionalFees = buildAdditionalFeesFromFeeStructure(fs);
       setAdditionalFees(
         restoredAdditionalFees.length
           ? restoredAdditionalFees
@@ -760,6 +773,7 @@ const CourseAssignmentForm = ({
   };
 
   const saveFeeEdit = () => {
+    userChangedInstallmentInputsRef.current = true;
     setOverriddenFees((prev) => ({
       ...prev,
       [editingFeeType]: round2(editingFeeValue),
