@@ -4,6 +4,7 @@ import EnrollmentSchema from "../modules/enrollmentModule.js";
 import TeacherSchema from "../modules/teacherModule.js";
 import HolidaySchema from "../modules/holidayModule.js";
 import AdmissionSchema from "../modules/AdmissionModule.js";
+import { getAssignedAttendanceBatchIds } from "../utils/attendanceBatchAccess.js";
 import {
   assertFaceEncryptionConfigured,
   decryptFaceDescriptors,
@@ -57,6 +58,33 @@ const normalizeEnrollmentStatus = (status) =>
 
 const isAttendanceEligibleEnrollmentStatus = (status) =>
   ["active", "enrolled", "on hold"].includes(normalizeEnrollmentStatus(status));
+
+const getAttendanceBatchIdsForRequest = (req) => {
+  const assignedBatchIds = getAssignedAttendanceBatchIds(req.currentUser);
+  return assignedBatchIds === null ? null : new Set(assignedBatchIds);
+};
+
+const getAttendanceBatches = async (req, res) => {
+  try {
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    const filter = assignedBatchIds === null
+      ? {}
+      : { _id: { $in: [...assignedBatchIds] } };
+    const batches = await BatchSchema.find(filter)
+      .populate("course", "courseName courseId")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({ success: true, data: batches });
+  } catch (error) {
+    console.error("getAttendanceBatches error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch attendance batches",
+      error: error.message,
+    });
+  }
+};
 
 // ─── Helper: check if date is a holiday for the batch ────────────────────────
 const checkHoliday = async (date, batchId) => {
@@ -137,17 +165,23 @@ const markQrAttendance = async (req, res) => {
       studentCode,
       attendanceDate,
     });
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    const scopedEnrollments = assignedBatchIds === null
+      ? eligibleEnrollments
+      : eligibleEnrollments.filter((enrollment) =>
+          assignedBatchIds.has(String(enrollment.batch?._id)),
+        );
 
-    if (!eligibleEnrollments.length) {
+    if (!scopedEnrollments.length) {
       return res.status(404).json({
         success: false,
         message:
-          "No active working batch was found for this student on the selected date. Please check the student's batch schedule and try again.",
+          "This student has no active working enrollment in your assigned batches for the selected date.",
       });
     }
 
     const holidayFilteredEnrollments = [];
-    for (const enrollment of eligibleEnrollments) {
+    for (const enrollment of scopedEnrollments) {
       const holiday = await checkHoliday(attendanceDate, enrollment.batch._id);
       if (!holiday || holiday.type !== "academy") {
         holidayFilteredEnrollments.push(enrollment);
@@ -288,9 +322,12 @@ const enrollFaceAttendance = async (req, res) => {
     })
       .populate("batch", "status isActive startDate endDate")
       .lean();
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
     if (
       !activeEnrollments.some(
         (enrollment) =>
+          (assignedBatchIds === null ||
+            assignedBatchIds.has(String(enrollment.batch?._id))) &&
           enrollment.batch?.status === "Active" &&
           enrollment.batch.isActive !== false &&
           isWithinBatchDateRange(today, enrollment.batch),
@@ -434,11 +471,21 @@ const markFaceAttendance = async (req, res) => {
     }
 
     assertFaceEncryptionConfigured();
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    const accessibleStudentIds = assignedBatchIds === null
+      ? null
+      : await EnrollmentSchema.distinct("student", {
+          batch: { $in: [...assignedBatchIds] },
+          status: { $in: ACTIVE_FACE_ENROLLMENT_STATUSES },
+        });
     const registeredStudents = await AdmissionSchema.find({
       isActive: { $ne: false },
       "faceAttendance.enabled": true,
       "faceAttendance.modelVersion": FACE_MODEL_VERSION,
       "faceAttendance.descriptorsEncrypted": { $exists: true, $ne: "" },
+      ...(accessibleStudentIds === null
+        ? {}
+        : { _id: { $in: accessibleStudentIds } }),
     })
       .select(
         "studentName registrationNo gender profilePicture mobileNumber faceAttendance.modelVersion +faceAttendance.descriptorsEncrypted",
@@ -504,22 +551,31 @@ const markFaceAttendance = async (req, res) => {
     const validEnrollments = activeEnrollments.filter(
       (enrollment) =>
         enrollment.batch &&
+        (assignedBatchIds === null ||
+          assignedBatchIds.has(String(enrollment.batch._id))) &&
         enrollment.batch.status === "Active" &&
         enrollment.batch.isActive !== false &&
         isWithinBatchDateRange(attendanceDate, enrollment.batch),
     );
+    const requestedBatchId = String(req.body?.batchId || "");
+    const targetEnrollments = requestedBatchId &&
+      requestedBatchId !== "__all_batches__"
+      ? validEnrollments.filter(
+          (enrollment) => String(enrollment.batch._id) === requestedBatchId,
+        )
+      : validEnrollments;
 
-    if (!validEnrollments.length) {
+    if (!targetEnrollments.length) {
       return res.status(409).json({
         success: false,
         code: "FACE_NO_ACTIVE_ENROLLMENT",
         message:
-          "This student was recognized, but has no active course or batch enrollment.",
+          "This student was recognized, but has no active enrollment in the selected or assigned attendance batches.",
       });
     }
 
     const eligibleEnrollments = [];
-    for (const enrollment of validEnrollments) {
+    for (const enrollment of targetEnrollments) {
       if (!isWorkingDay(attendanceDate, enrollment.batch.days)) continue;
       const holiday = await checkHoliday(attendanceDate, enrollment.batch._id);
       if (!holiday || holiday.type !== "academy") {
@@ -667,6 +723,32 @@ const bulkMarkAttendance = async (req, res) => {
       return res.status(404).json({ success: false, message: "Batch not found" });
     }
 
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    if (assignedBatchIds !== null) {
+      if (records.some((record) => record.personType !== "student")) {
+        return res.status(403).json({
+          success: false,
+          message: "Assigned attendance accounts can mark student attendance only.",
+        });
+      }
+
+      const studentIds = [...new Set(records.map((record) => String(record.personId || "")))];
+      const enrollments = await EnrollmentSchema.find({
+        batch: batchId,
+        student: { $in: studentIds },
+        status: { $in: ACTIVE_QR_ENROLLMENT_STATUSES },
+      })
+        .select("student")
+        .lean();
+      const enrolledStudentIds = new Set(enrollments.map((item) => String(item.student)));
+      if (studentIds.some((studentId) => !enrolledStudentIds.has(studentId))) {
+        return res.status(400).json({
+          success: false,
+          message: "Attendance can only be marked for students enrolled in this assigned batch.",
+        });
+      }
+    }
+
     const attendanceDate = new Date(date);
     attendanceDate.setHours(0, 0, 0, 0);
 
@@ -743,6 +825,9 @@ const getAttendanceByBatchAndDate = async (req, res) => {
     const records = await AttendanceSchema.find({
       batch: batchId,
       date: { $gte: attendanceDate, $lt: nextDay },
+      ...(getAttendanceBatchIdsForRequest(req) === null
+        ? {}
+        : { personType: "student" }),
     })
       .populate("person")
       .lean();
@@ -759,9 +844,17 @@ const getPersonAttendance = async (req, res) => {
   try {
     const { personId } = req.params;
     const { personType, from, to } = req.query;
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
 
     const filter = { person: personId };
-    if (personType) filter.personType = personType;
+    if (assignedBatchIds !== null) {
+      filter.personType = "student";
+      filter.batch = { $in: [...assignedBatchIds] };
+      if (!assignedBatchIds.size) {
+        return res.status(200).json({ success: true, data: [] });
+      }
+    }
+    if (assignedBatchIds === null && personType) filter.personType = personType;
     if (from || to) {
       filter.date = {};
       if (from) {
@@ -840,13 +933,12 @@ const getBatchMembers = async (req, res) => {
     // Teachers assigned to this course — Teacher schema has no isActive field
     const courseId = batch.course?._id || batch.course;
     console.log(`[Attendance] Looking for teachers with courseId: ${courseId}`);
-    const teachers = await TeacherSchema.find({
-      courseId: courseId,
-    })
-      .select("fullName teacherId gender designation")
-      .lean();
-
-    console.log(`[Attendance] Teachers found: ${teachers.length}`);
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    const teachers = assignedBatchIds !== null
+      ? []
+      : await TeacherSchema.find({ courseId })
+          .select("fullName teacherId gender designation")
+          .lean();
 
     const teacherList = teachers.map((t) => ({
       _id: t._id,
@@ -879,7 +971,11 @@ const getAttendanceSummary = async (req, res) => {
     const { from, to, personType } = req.query;
 
     const filter = { batch: batchId };
-    if (personType) filter.personType = personType;
+    if (getAttendanceBatchIdsForRequest(req) !== null) {
+      filter.personType = "student";
+    } else if (personType) {
+      filter.personType = personType;
+    }
     if (from || to) {
       filter.date = {};
       if (from) {
@@ -1004,6 +1100,9 @@ const getMonthCalendar = async (req, res) => {
     const records = await AttendanceSchema.find({
       batch: batchId,
       date: { $gte: from, $lte: to },
+      ...(getAttendanceBatchIdsForRequest(req) === null
+        ? {}
+        : { personType: "student" }),
     })
       .select("date status updatedAt")
       .lean();
@@ -1051,7 +1150,11 @@ const getAttendanceHistory = async (req, res) => {
       batch: batchId,
       date: { $gte: fromDate, $lte: toDate },
     };
-    if (personType && personType !== "all") filter.personType = personType;
+    if (getAttendanceBatchIdsForRequest(req) !== null) {
+      filter.personType = "student";
+    } else if (personType && personType !== "all") {
+      filter.personType = personType;
+    }
 
     const records = await AttendanceSchema.find(filter)
       .populate({
@@ -1119,6 +1222,10 @@ const markHolidayAttendance = async (req, res) => {
       const allBatches = await BatchSchema.find({}, "_id").lean();
       batchIds = allBatches.map((b) => b._id.toString());
     }
+    const assignedBatchIds = getAttendanceBatchIdsForRequest(req);
+    if (assignedBatchIds !== null) {
+      batchIds = batchIds.filter((batchId) => assignedBatchIds.has(String(batchId)));
+    }
 
     const date = new Date(holiday.date);
     date.setHours(0, 0, 0, 0);
@@ -1159,6 +1266,7 @@ const markHolidayAttendance = async (req, res) => {
       }
 
       // Teachers assigned to the batch's course
+      if (assignedBatchIds !== null) continue;
       const courseId = batch.course;
       if (courseId) {
         const teachers = await TeacherSchema.find({ courseId }, "_id").lean();
@@ -1202,6 +1310,7 @@ const markHolidayAttendance = async (req, res) => {
 };
 
 export {
+  getAttendanceBatches,
   bulkMarkAttendance,
   markQrAttendance,
   enrollFaceAttendance,

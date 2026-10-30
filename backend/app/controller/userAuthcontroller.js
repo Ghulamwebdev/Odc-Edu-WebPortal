@@ -2,6 +2,8 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import Role from "../modules/roleModule.js";
 import UserAuth from "../modules/userAuthModal.js";
+import Batch from "../modules/batchModule.js";
+import EmployeeCourse from "../modules/employeeCourseModule.js";
 import {
   buildPermissionsMap,
   normalizePermissions,
@@ -19,6 +21,22 @@ const persistUserStateByEmail = async (user, updates = {}) => {
     { $set: updates },
   );
   Object.assign(user, updates);
+};
+
+const normalizeAttendanceBatchIds = (value) => {
+  if (Array.isArray(value)) return [...new Set(value.filter(Boolean).map(String))];
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter(Boolean).map(String))]
+      : [];
+  } catch {
+    return String(value)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
 };
 
 const createUser = async (req, res) => {
@@ -45,6 +63,22 @@ const createUser = async (req, res) => {
       }
     }
 
+    const attendanceBatchIds = normalizeAttendanceBatchIds(
+      req.body.attendanceBatchIds,
+    );
+    if (attendanceBatchIds.length) {
+      const validBatches = await Batch.find(
+        { _id: { $in: attendanceBatchIds } },
+        "_id",
+      ).lean();
+      if (validBatches.length !== attendanceBatchIds.length) {
+        return res.status(400).json({
+          status: "error",
+          message: "One or more selected attendance batches are invalid.",
+        });
+      }
+    }
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     const image = req.file ? req.file.buffer.toString("base64") : null;
@@ -59,6 +93,7 @@ const createUser = async (req, res) => {
       isSuperAdmin: Boolean(isSuperAdmin),
       isActive: true,
       permissions: Array.isArray(permissions) ? normalizePermissions(permissions) : [],
+      attendanceBatchIds,
     });
 
     await createdUser.save();
@@ -145,6 +180,33 @@ const userLogin = async (req, res) => {
     }
 
     const resolvedRole = await resolveRoleForUser(user);
+    const roleName = serializeRoleForClient(user, resolvedRole);
+    if (
+      user.accountType === "employee" ||
+      String(roleName || "").trim().toLowerCase() === "employee"
+    ) {
+      const courseIds = await EmployeeCourse.distinct("course", {
+        employee: user._id,
+      });
+      if (courseIds.length) {
+        const attendanceBatchIds = await Batch.distinct("_id", {
+          course: { $in: courseIds.map(String) },
+        });
+        const normalizedBatchIds = [...new Set(attendanceBatchIds.map(String))];
+        const currentBatchIds = [...new Set(
+          (user.attendanceBatchIds || []).map(String),
+        )];
+        if (
+          currentBatchIds.length !== normalizedBatchIds.length ||
+          currentBatchIds.some((batchId) => !normalizedBatchIds.includes(batchId))
+        ) {
+          await persistUserStateByEmail(user, {
+            attendanceBatchIds: normalizedBatchIds,
+          });
+        }
+      }
+    }
+
     const permissions = buildPermissionsMap(user, resolvedRole);
 
     const token = jwt.sign(

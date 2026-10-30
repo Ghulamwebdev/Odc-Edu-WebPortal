@@ -223,6 +223,7 @@ const serializeUser = async (user) => {
     details: user.details,
     isSuperAdmin: user.isSuperAdmin,
     isActive: user.isActive,
+    attendanceBatchIds: (user.attendanceBatchIds || []).map(String),
     lastLogin: user.lastLogin,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -325,6 +326,26 @@ const updateUserAccount = async (req, res) => {
 
     if (canViewAll && Array.isArray(req.body.permissions)) {
       updatedData.permissions = normalizePermissions(req.body.permissions);
+    }
+
+    if (
+      canViewAll &&
+      Object.prototype.hasOwnProperty.call(req.body, "attendanceBatchIds")
+    ) {
+      const attendanceBatchIds = unique(toArray(req.body.attendanceBatchIds));
+      if (attendanceBatchIds.length) {
+        const validBatches = await Batch.find(
+          { _id: { $in: attendanceBatchIds } },
+          "_id",
+        ).lean();
+        if (validBatches.length !== attendanceBatchIds.length) {
+          return res.status(400).json({
+            status: "error",
+            message: "One or more selected attendance batches are invalid.",
+          });
+        }
+      }
+      updatedData.attendanceBatchIds = attendanceBatchIds;
     }
 
     if (req.body.password) {

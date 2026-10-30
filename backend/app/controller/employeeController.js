@@ -76,6 +76,35 @@ const parseCourseIds = (value) => {
   }
 };
 
+const parseAttendanceBatchIds = (value) => {
+  if (Array.isArray(value)) return [...new Set(value.filter(Boolean).map(String))];
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter(Boolean).map(String))]
+      : [];
+  } catch {
+    return String(value)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+};
+
+const validateAttendanceBatchIds = async (batchIds = []) => {
+  const uniqueIds = [...new Set(batchIds.map(String))];
+  if (!uniqueIds.length) return [];
+
+  const batches = await Batch.find({ _id: { $in: uniqueIds } }, "_id").lean();
+  if (batches.length !== uniqueIds.length) {
+    const error = new Error("One or more selected attendance batches are invalid.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return uniqueIds;
+};
+
 const parsePermissionInput = (value) => {
   if (Array.isArray(value)) return value;
   if (typeof value !== "string") return null;
@@ -96,6 +125,15 @@ const validateCourseIds = async (courseIds = []) => {
     throw new Error("One or more selected courses are invalid.");
   }
   return uniqueIds;
+};
+
+const getAttendanceBatchIdsForCourses = async (courseIds = []) => {
+  if (!courseIds.length) return [];
+  const batches = await Batch.find(
+    { course: { $in: courseIds } },
+    "_id",
+  ).lean();
+  return batches.map((batch) => String(batch._id));
 };
 
 const syncEmployeeCourses = async (employeeId, courseIds = [], assignedBy) => {
@@ -137,6 +175,7 @@ const serializeEmployee = async (user) => {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     courseIds: assignments.map((item) => item.course?._id || item.course).filter(Boolean),
+    attendanceBatchIds: (user.attendanceBatchIds || []).map(String),
     courses: assignments.map((item) => item.course).filter(Boolean),
   };
 };
@@ -260,6 +299,12 @@ export const createEmployee = async (req, res) => {
     const employeeRole = await ensureEmployeeRole();
     const hashedPassword = await bcrypt.hash(password, await bcrypt.genSalt(10));
     const profile = req.file ? `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}` : undefined;
+    const courseIds = await validateCourseIds(parseCourseIds(req.body.courseIds));
+    const attendanceBatchIds = courseIds.length
+      ? await getAttendanceBatchIdsForCourses(courseIds)
+      : await validateAttendanceBatchIds(
+          parseAttendanceBatchIds(req.body.attendanceBatchIds),
+        );
 
     const employee = await UserAuth.create({
       name,
@@ -271,6 +316,7 @@ export const createEmployee = async (req, res) => {
       isSuperAdmin: false,
       isActive: status !== "inactive",
       profile,
+      attendanceBatchIds,
       details: {
         phone,
         job: designation,
@@ -281,10 +327,10 @@ export const createEmployee = async (req, res) => {
         : employeePermissions(),
     });
 
-    await syncEmployeeCourses(employee._id, parseCourseIds(req.body.courseIds), req.user?._id || req.user?.id);
+    await syncEmployeeCourses(employee._id, courseIds, req.user?._id || req.user?.id);
     res.status(201).json({ success: true, message: "Employee created successfully", data: await serializeEmployee(employee) });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to create employee", error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: "Failed to create employee", error: error.message });
   }
 };
 
@@ -328,6 +374,17 @@ export const updateEmployee = async (req, res) => {
     if (hasPermissions) {
       employee.permissions = normalizePermissions(submittedPermissions);
     }
+    const hasCourseAssignments = Object.prototype.hasOwnProperty.call(req.body, "courseIds");
+    const courseIds = hasCourseAssignments
+      ? await validateCourseIds(parseCourseIds(req.body.courseIds))
+      : null;
+    if (courseIds?.length) {
+      employee.attendanceBatchIds = await getAttendanceBatchIdsForCourses(courseIds);
+    } else if (hasCourseAssignments || Object.prototype.hasOwnProperty.call(req.body, "attendanceBatchIds")) {
+      employee.attendanceBatchIds = await validateAttendanceBatchIds(
+        parseAttendanceBatchIds(req.body.attendanceBatchIds),
+      );
+    }
     employee.isActive = String(req.body.status || (employee.isActive ? "active" : "inactive")).toLowerCase() !== "inactive";
     employee.details = {
       ...(employee.details?.toObject ? employee.details.toObject() : employee.details || {}),
@@ -337,13 +394,13 @@ export const updateEmployee = async (req, res) => {
     };
 
     await employee.save();
-    if (Object.prototype.hasOwnProperty.call(req.body, "courseIds")) {
-      await syncEmployeeCourses(employee._id, parseCourseIds(req.body.courseIds), req.user?._id || req.user?.id);
+    if (hasCourseAssignments) {
+      await syncEmployeeCourses(employee._id, courseIds, req.user?._id || req.user?.id);
     }
 
     res.status(200).json({ success: true, message: "Employee updated successfully", data: await serializeEmployee(employee) });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to update employee", error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: "Failed to update employee", error: error.message });
   }
 };
 

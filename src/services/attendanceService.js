@@ -1,5 +1,10 @@
 import api from "../api/axiosInstance";
 
+export const getAttendanceBatches = async () => {
+  const response = await api.get("/attendance/batches");
+  return response.data;
+};
+
 // Mark attendance for multiple persons in a batch on a date
 // records: [{ personId, personType: 'student'|'teacher', status, notes }]
 export const bulkMarkAttendance = async (batchIdOrPayload, date, records) => {

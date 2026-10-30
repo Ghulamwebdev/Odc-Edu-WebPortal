@@ -15,8 +15,8 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import jsQR from "jsqr";
 import odysseyLogo from "../../assets/images/logos/LOGO.png";
-import { getAllBatches } from "../../services/batchService";
 import {
+  getAttendanceBatches,
   getBatchMembers,
   getAttendanceByBatchAndDate,
   bulkMarkAttendance,
@@ -679,6 +679,12 @@ function MarkAttendancePanel({ batches }) {
       .catch(() => message.error("Failed to load batch members"))
       .finally(() => setLoading(false));
   }, [batches, selectedBatch]);
+
+  useEffect(() => {
+    if (!members.teachers.length && activeTab !== "student") {
+      setActiveTab("student");
+    }
+  }, [activeTab, members.teachers.length]);
 
   useEffect(() => {
     if (!selectedBatchDetails) return;
@@ -2902,28 +2908,30 @@ function MarkAttendancePanel({ batches }) {
                   </Spin>
                 ),
               },
-              {
-                key: "teacher",
-                label: <span className="flex items-center gap-1">Teachers <Badge count={members.teachers.length} showZero color="#8b5cf6" /></span>,
-                children: (
-                  <Spin spinning={loading}>
-                    <div className="mb-3 flex items-center justify-between gap-3 px-1">
-                      <Checkbox
-                        checked={areAllVisibleTeachersPresent}
-                        disabled={isAcademyHoliday || filteredTeachers.length === 0}
-                        onChange={handleMarkAllVisibleTeachersPresent}
-                      >
-                        Mark all visible teachers present for today
-                      </Checkbox>
-                      <span className="text-xs text-gray-500">
-                        If you change any teacher to absent, half day, or leave, this will turn off automatically.
-                      </span>
-                    </div>
-                    <Table dataSource={filteredTeachers} columns={teacherCols} rowKey="attendanceKey"
-                      pagination={false} size="middle" locale={{ emptyText: "No teachers assigned to this batch's course" }} />
-                  </Spin>
-                ),
-              },
+              ...(members.teachers.length
+                ? [{
+                    key: "teacher",
+                    label: <span className="flex items-center gap-1">Teachers <Badge count={members.teachers.length} showZero color="#8b5cf6" /></span>,
+                    children: (
+                      <Spin spinning={loading}>
+                        <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                          <Checkbox
+                            checked={areAllVisibleTeachersPresent}
+                            disabled={isAcademyHoliday || filteredTeachers.length === 0}
+                            onChange={handleMarkAllVisibleTeachersPresent}
+                          >
+                            Mark all visible teachers present for today
+                          </Checkbox>
+                          <span className="text-xs text-gray-500">
+                            If you change any teacher to absent, half day, or leave, this will turn off automatically.
+                          </span>
+                        </div>
+                        <Table dataSource={filteredTeachers} columns={teacherCols} rowKey="attendanceKey"
+                          pagination={false} size="middle" locale={{ emptyText: "No teachers assigned to this batch's course" }} />
+                      </Spin>
+                    ),
+                  }]
+                : []),
             ]}
           />
         </div>
@@ -4385,12 +4393,14 @@ function HistoryPanel({ batches }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function Attendance() {
   const [batches, setBatches] = useState([]);
+  const [batchesLoaded, setBatchesLoaded] = useState(false);
   const [mainTab, setMainTab] = useState("mark");
 
   useEffect(() => {
-    getAllBatches()
+    getAttendanceBatches()
       .then((res) => setBatches(res.data || res.batches || []))
-      .catch(() => message.error("Failed to load batches"));
+      .catch(() => message.error("Failed to load attendance batches"))
+      .finally(() => setBatchesLoaded(true));
   }, []);
 
   return (
@@ -4402,6 +4412,11 @@ export default function Attendance() {
           <p className="module-subtitle">Mark and review student & teacher attendance per batch</p>
         </div>
       </div>
+      {batchesLoaded && !batches.length ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          No attendance batches are assigned to this account. Ask a super admin to assign batches in the account settings.
+        </div>
+      ) : null}
 
       {/* Main tab switcher */}
       <Tabs activeKey={mainTab} onChange={setMainTab}

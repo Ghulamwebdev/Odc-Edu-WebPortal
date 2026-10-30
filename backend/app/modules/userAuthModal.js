@@ -72,6 +72,10 @@ const authSchema = new mongoose.Schema(
       batchIds: [{ type: String, ref: "Batch" }],
       createdBy: { type: String, ref: "User" },
     },
+    attendanceBatchIds: {
+      type: [{ type: String, ref: "Batch" }],
+      default: [],
+    },
     isSuperAdmin: {
       type: Boolean,
       default: false,

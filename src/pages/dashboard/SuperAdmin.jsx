@@ -27,6 +27,17 @@ import {
   SafetyOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import {
+  Award,
+  BookOpen,
+  CalendarCheck,
+  ClipboardList,
+  DollarSign,
+  GraduationCap,
+  LayoutDashboard,
+  Megaphone,
+  Users,
+} from "lucide-react";
 import dayjs from "dayjs";
 import {
   RBAC_ACTIONS,
@@ -42,6 +53,7 @@ import {
 } from "../../services/roleService";
 import { createNewAdmin } from "../../services/authService";
 import { getCourses } from "../../services/feeService";
+import { getAllBatches } from "../../services/batchService";
 import {
   createEmployee,
   deleteEmployee,
@@ -52,7 +64,6 @@ import {
   deleteAdmin,
   getAllAdminInfo,
   updateAdminInfo,
-  updateUserRole,
   updateUserStatus,
 } from "../../services/adminService";
 import { getSuperAdminFinanceMonitor } from "../../services/accountingService";
@@ -67,6 +78,39 @@ const moduleLabels = {
   accounting: "Accounting",
   certifications: "Certifications",
   announcements: "Announcements",
+};
+const moduleVisuals = {
+  dashboard: { icon: LayoutDashboard, accent: "indigo" },
+  courses: { icon: BookOpen, accent: "blue" },
+  employees: { icon: Users, accent: "cyan" },
+  test_studio: { icon: ClipboardList, accent: "violet" },
+  students: { icon: GraduationCap, accent: "emerald" },
+  attendance: { icon: CalendarCheck, accent: "teal" },
+  accounting: { icon: DollarSign, accent: "amber" },
+  certifications: { icon: Award, accent: "rose" },
+  announcements: { icon: Megaphone, accent: "sky" },
+};
+const moduleAccentClasses = {
+  indigo: "border-t-indigo-400 bg-indigo-50/35",
+  blue: "border-t-blue-400 bg-blue-50/35",
+  cyan: "border-t-cyan-500 bg-cyan-50/35",
+  violet: "border-t-violet-400 bg-violet-50/35",
+  emerald: "border-t-emerald-500 bg-emerald-50/35",
+  teal: "border-t-teal-500 bg-teal-50/35",
+  amber: "border-t-amber-400 bg-amber-50/35",
+  rose: "border-t-rose-400 bg-rose-50/35",
+  sky: "border-t-sky-400 bg-sky-50/35",
+};
+const moduleIconClasses = {
+  indigo: "bg-indigo-100 text-indigo-700",
+  blue: "bg-blue-100 text-blue-700",
+  cyan: "bg-cyan-100 text-cyan-700",
+  violet: "bg-violet-100 text-violet-700",
+  emerald: "bg-emerald-100 text-emerald-700",
+  teal: "bg-teal-100 text-teal-700",
+  amber: "bg-amber-100 text-amber-700",
+  rose: "bg-rose-100 text-rose-700",
+  sky: "bg-sky-100 text-sky-700",
 };
 const rolesViewOptions = [
   { key: "roles", label: "Roles Table" },
@@ -119,9 +163,6 @@ const formatActionLabel = (action) => action.charAt(0).toUpperCase() + action.sl
 
 const getRolePreviewModules = (role) =>
   RBAC_MODULES.filter((moduleKey) => buildPermissionsFromRole(role)?.[moduleKey]?.view);
-
-const getEnabledRoleActions = (role, moduleKey) =>
-  RBAC_ACTIONS.filter((action) => buildPermissionsFromRole(role)?.[moduleKey]?.[action]);
 
 const getEnabledUserModules = (permissions = {}) =>
   RBAC_MODULES.filter((moduleKey) => permissions?.[moduleKey]?.view);
@@ -177,6 +218,15 @@ const isEmployeeAccount = (user) =>
   user?.accountType === "employee" ||
   String(user?.role || "").toLowerCase() === "employee";
 
+const getBatchCourseId = (batch) => String(batch?.course?._id || batch?.course || "");
+
+const getBatchIdsForCourseIds = (batches, courseIds = []) => {
+  const selectedCourseIds = new Set(courseIds.map(String));
+  return batches
+    .filter((batch) => selectedCourseIds.has(getBatchCourseId(batch)))
+    .map((batch) => String(batch._id));
+};
+
 const shouldShowUserInTable = (user, roles) =>
   user?.isSuperAdmin === true ||
   isEmployeeAccount(user) ||
@@ -205,6 +255,8 @@ const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
   const currentActions = permissions[moduleKey];
   const isEnabled = currentActions.view;
   const moduleLabel = moduleLabels[moduleKey];
+  const moduleVisual = moduleVisuals[moduleKey];
+  const ModuleIcon = moduleVisual.icon;
 
   const updateModule = (nextActions) => {
     setPermissions((prev) => ({
@@ -231,13 +283,18 @@ const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
   };
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <h4 className="m-0 text-base font-ArialBold text-primary">{moduleLabel}</h4>
-          <p className="m-0 mt-1 text-xs text-slate-500">
+    <div className={`flex h-full min-h-[258px] flex-col rounded-2xl border border-slate-200 border-t-4 p-5 shadow-sm transition-shadow hover:shadow-md ${moduleAccentClasses[moduleVisual.accent]}`}>
+      <div className="mb-4 flex min-h-[58px] items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${moduleIconClasses[moduleVisual.accent]}`}>
+            <ModuleIcon size={19} strokeWidth={2} />
+          </span>
+          <div className="min-w-0">
+            <h4 className="m-0 text-base font-ArialBold leading-6 text-primary">{moduleLabel}</h4>
+            <p className="m-0 mt-1 text-xs leading-5 text-slate-500">
             Enable module access and choose allowed actions
-          </p>
+            </p>
+          </div>
         </div>
         <Switch
           checked={isEnabled}
@@ -257,20 +314,20 @@ const PermissionModuleCard = ({ moduleKey, permissions, setPermissions }) => {
         />
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        <Button size="small" onClick={() => setAll(true)}>
+      <div className="mb-4 flex min-h-8 flex-wrap items-center gap-2">
+        <Button size="small" className="min-w-[88px]" onClick={() => setAll(true)}>
           Select All
         </Button>
-        <Button size="small" onClick={() => setAll(false)}>
+        <Button size="small" className="min-w-[88px]" onClick={() => setAll(false)}>
           Clear All
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="mt-auto grid grid-cols-2 auto-rows-fr gap-2">
         {RBAC_ACTIONS.map((action) => (
           <label
             key={action}
-            className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-colors ${
+            className={`flex min-h-[42px] cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-colors ${
               currentActions[action]
                 ? "border-primary bg-slate-50 text-primary"
                 : "border-slate-200 bg-white text-slate-600"
@@ -313,6 +370,8 @@ const SuperAdmin = () => {
   const [users, setUsers] = useState([]);
   const [employeeRecords, setEmployeeRecords] = useState([]);
   const [courses, setCourses] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [batchesLoaded, setBatchesLoaded] = useState(false);
   const [loadingRoles, setLoadingRoles] = useState(false);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
@@ -326,13 +385,13 @@ const SuperAdmin = () => {
   const [activePermissionRoleId, setActivePermissionRoleId] = useState(null);
   const [permissionEditorState, setPermissionEditorState] = useState(createPermissionTemplate());
   const [savingPermissionPanel, setSavingPermissionPanel] = useState(false);
-  const [viewUserOpen, setViewUserOpen] = useState(false);
   const [viewRoleOpen, setViewRoleOpen] = useState(false);
   const [userPermissionEditorState, setUserPermissionEditorState] = useState(
     createPermissionTemplate(),
   );
   const [savingUserAccess, setSavingUserAccess] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [viewUserId, setViewUserId] = useState(null);
   const [selectedRole, setSelectedRole] = useState(null);
   const [financeMonth, setFinanceMonth] = useState(dayjs());
   const [financeLoading, setFinanceLoading] = useState(false);
@@ -340,12 +399,14 @@ const SuperAdmin = () => {
   const [form] = Form.useForm();
   const [userForm] = Form.useForm();
   const selectedAccountType = Form.useWatch("accountType", userForm) || "employee";
+  const selectedEmployeeCourseIds = Form.useWatch("courseIds", userForm);
 
   const currentSection = ["overview", "roles", "permissions", "finance"].includes(
     searchParams.get("section"),
   )
     ? searchParams.get("section")
     : "overview";
+  const isUserDetailsPage = searchParams.get("view") === "user";
 
   const loadRoles = async () => {
     setLoadingRoles(true);
@@ -395,11 +456,23 @@ const SuperAdmin = () => {
     }
   };
 
+  const loadBatches = async () => {
+    try {
+      const response = await getAllBatches();
+      setBatches(response?.data || response?.batches || []);
+    } catch (error) {
+      message.error(error?.message || "Failed to load batches");
+    } finally {
+      setBatchesLoaded(true);
+    }
+  };
+
   useEffect(() => {
     loadRoles();
     loadUsers();
     loadEmployeeRecords();
     loadCourses();
+    loadBatches();
   }, []);
 
   useEffect(() => {
@@ -407,6 +480,25 @@ const SuperAdmin = () => {
       setActiveRolesView("users");
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const nextViewUserId = searchParams.get("view") === "user"
+      ? searchParams.get("userId")
+      : null;
+    setViewUserId(nextViewUserId);
+    if (nextViewUserId) {
+      setActiveRolesView("users");
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (viewUserId) {
+      const user = users.find((item) => String(item._id) === String(viewUserId));
+      if (user) setSelectedUser(user);
+    } else {
+      setSelectedUser(null);
+    }
+  }, [users, viewUserId]);
 
   const loadFinanceMonitor = async (monthValue = financeMonth) => {
     setFinanceLoading(true);
@@ -464,6 +556,27 @@ const SuperAdmin = () => {
     }
   }, [selectedUser]);
 
+  useEffect(() => {
+    if (
+      userModalOpen &&
+      selectedAccountType === "employee" &&
+      batchesLoaded &&
+      selectedEmployeeCourseIds?.length
+    ) {
+      userForm.setFieldValue(
+        "attendanceBatchIds",
+        getBatchIdsForCourseIds(batches, selectedEmployeeCourseIds),
+      );
+    }
+  }, [
+    batches,
+    batchesLoaded,
+    selectedAccountType,
+    selectedEmployeeCourseIds,
+    userForm,
+    userModalOpen,
+  ]);
+
   const setSection = (sectionKey) => {
     setSearchParams({ section: sectionKey });
   };
@@ -477,7 +590,12 @@ const SuperAdmin = () => {
   const openCreateUserModal = () => {
     setEditingUser(null);
     userForm.resetFields();
-    userForm.setFieldsValue({ accountType: "employee", status: "active", courseIds: [] });
+    userForm.setFieldsValue({
+      accountType: "employee",
+      status: "active",
+      courseIds: [],
+      attendanceBatchIds: [],
+    });
     setAccountPermissionState(createPermissionTemplate());
     setUserModalOpen(true);
   };
@@ -498,6 +616,7 @@ const SuperAdmin = () => {
       designation: employee?.designation || user.details?.job || "",
       status: user.isActive ? "active" : "inactive",
       courseIds: employee?.courseIds || [],
+      attendanceBatchIds: employee?.attendanceBatchIds || user.attendanceBatchIds || [],
       profile: [],
       password: "",
     });
@@ -581,6 +700,7 @@ const SuperAdmin = () => {
           designation: values.designation,
           status: values.status || "active",
           courseIds: values.courseIds || [],
+          attendanceBatchIds: values.attendanceBatchIds || [],
           profile: values.profile?.fileList || values.profile || [],
           permissions,
         };
@@ -598,6 +718,7 @@ const SuperAdmin = () => {
           name: values.name,
           email: values.email,
           roleId: values.roleId,
+          attendanceBatchIds: values.attendanceBatchIds || [],
           permissions,
         };
         if (values.password) payload.password = values.password;
@@ -710,11 +831,6 @@ const SuperAdmin = () => {
       roles
         .filter((role) => !role.isSystem)
         .map((role) => ({ label: role.name, value: role._id })),
-    [roles],
-  );
-
-  const roleOptions = useMemo(
-    () => roles.map((role) => ({ label: role.name, value: role._id })),
     [roles],
   );
 
@@ -908,26 +1024,10 @@ const SuperAdmin = () => {
           );
         }
 
-        const selectValue = roleOptions.some((option) => option.value === record.roleId)
-          ? record.roleId
-          : undefined;
-
         return (
-          <Select
-            value={selectValue}
-            options={customRoleOptions}
-            placeholder={record.role || "No role"}
-            className="min-w-[180px] role-select-theme"
-            onChange={async (value) => {
-              try {
-                await updateUserRole(record._id, value);
-                message.success("User role updated");
-                await Promise.all([loadUsers(), loadRoles()]);
-              } catch (error) {
-                message.error(error?.message || "Failed to update role");
-              }
-            }}
-          />
+          <span className="text-sm text-slate-700">
+            {record.role || "No role assigned"}
+          </span>
         );
       },
     },
@@ -980,7 +1080,12 @@ const SuperAdmin = () => {
             icon={<EyeOutlined />}
             onClick={() => {
               setSelectedUser(record);
-              setViewUserOpen(true);
+              setViewUserId(String(record._id));
+              setSearchParams({
+                section: "roles",
+                view: "user",
+                userId: String(record._id),
+              });
             }}
           >
             View
@@ -1427,7 +1532,7 @@ const SuperAdmin = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {RBAC_MODULES.map((moduleKey) => (
                   <PermissionModuleCard
                     key={moduleKey}
@@ -1645,10 +1750,14 @@ const SuperAdmin = () => {
 
   return (
     <div className="space-y-6">
-      {currentSection === "overview" && renderOverviewWorkspace()}
-      {currentSection === "roles" && renderRolesWorkspace()}
-      {currentSection === "permissions" && renderPermissionsWorkspace()}
-      {currentSection === "finance" && renderFinanceWorkspace()}
+      {!isUserDetailsPage ? (
+        <>
+          {currentSection === "overview" && renderOverviewWorkspace()}
+          {currentSection === "roles" && renderRolesWorkspace()}
+          {currentSection === "permissions" && renderPermissionsWorkspace()}
+          {currentSection === "finance" && renderFinanceWorkspace()}
+        </>
+      ) : null}
 
       <Modal
         title={editingRole ? "Edit Role" : "Create New Role"}
@@ -1775,18 +1884,66 @@ const SuperAdmin = () => {
                       className="form-input"
                     />
                   </Form.Item>
-                  <Form.Item name="courseIds" label="Assigned Courses">
+                  <Form.Item
+                    name="courseIds"
+                    label={
+                      <div className="flex w-full items-center justify-between gap-3">
+                        <span>Assigned Courses</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-normal text-slate-500">
+                            {selectedEmployeeCourseIds?.length || 0} selected
+                          </span>
+                          {selectedEmployeeCourseIds?.length ? (
+                            <Button
+                              type="link"
+                              size="small"
+                              className="!h-auto !p-0"
+                              onClick={() => {
+                                userForm.setFieldValue("courseIds", []);
+                                userForm.setFieldValue("attendanceBatchIds", []);
+                              }}
+                            >
+                              Clear
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    }
+                  >
                     <Select
                       mode="multiple"
                       allowClear
                       showSearch
                       optionFilterProp="label"
+                      maxTagCount={1}
+                      maxTagPlaceholder={(omittedValues) => `+${omittedValues.length} more`}
+                      optionRender={(option) => (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={(selectedEmployeeCourseIds || []).some(
+                              (courseId) => String(courseId) === String(option.value),
+                            )}
+                            readOnly
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            className="pointer-events-none accent-blue-600"
+                          />
+                          <span>{option.label}</span>
+                        </div>
+                      )}
                       options={courses.map((course) => ({
                         value: course._id,
                         label: `${course.courseName} (${course.courseId})`,
                       }))}
                       placeholder="Select courses for this employee"
                       className="form-input"
+                      onChange={(courseIds) =>
+                        userForm.setFieldValue(
+                          "attendanceBatchIds",
+                          getBatchIdsForCourseIds(batches, courseIds || []),
+                        )
+                      }
                     />
                   </Form.Item>
                   <Form.Item name="profile" label="Profile Picture">
@@ -1815,6 +1972,57 @@ const SuperAdmin = () => {
               )}
 
               <Form.Item
+                label={
+                  <div className="flex w-full items-center justify-between gap-3">
+                    <span>Attendance Batches</span>
+                    {selectedAccountType === "employee" && selectedEmployeeCourseIds?.length ? (
+                      <span className="text-xs font-normal text-slate-500">Auto-assigned from courses</span>
+                    ) : (
+                      <Button
+                        type="link"
+                        size="small"
+                        className="!h-auto !p-0"
+                        onClick={() =>
+                          userForm.setFieldValue(
+                            "attendanceBatchIds",
+                            batches.map((batch) => String(batch._id)),
+                          )
+                        }
+                        disabled={!batches.length}
+                      >
+                        Select All Batches
+                      </Button>
+                    )}
+                  </div>
+                }
+                extra={
+                  selectedAccountType === "employee" && selectedEmployeeCourseIds?.length
+                    ? "All batches belonging to the selected courses are automatically assigned for attendance."
+                    : "Attendance access is limited to students in these batches. Clear the selection to disable attendance batch access."
+                }
+              >
+                <Form.Item name="attendanceBatchIds" noStyle>
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    disabled={
+                      selectedAccountType === "employee" &&
+                      Boolean(selectedEmployeeCourseIds?.length)
+                    }
+                    optionFilterProp="label"
+                    maxTagCount="responsive"
+                    options={batches.map((batch) => ({
+                      value: String(batch._id),
+                      label: `${batch.batchName || "Batch"}${batch.batchCode ? ` (${batch.batchCode})` : ""}${batch.course?.courseName ? ` — ${batch.course.courseName}` : ""}`,
+                    }))}
+                    placeholder="Select batches this account can manage attendance for"
+                    className="form-input"
+                  />
+                </Form.Item>
+              </Form.Item>
+
+              <Form.Item
                 name="password"
                 label="Password"
                 rules={[
@@ -1837,7 +2045,7 @@ const SuperAdmin = () => {
                   This account can perform only the actions enabled below.
                 </p>
               </div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {RBAC_MODULES.map((moduleKey) => (
                   <PermissionModuleCard
                     key={moduleKey}
@@ -1852,44 +2060,52 @@ const SuperAdmin = () => {
         </div>
       </Modal>
 
-      <Modal
-        title="User Details"
-        open={viewUserOpen}
-        footer={null}
-        onCancel={() => {
-          setViewUserOpen(false);
-          setSelectedUser(null);
-        }}
-        width={980}
-      >
+      {isUserDetailsPage ? (
+        <section className="mx-auto w-full max-w-[1680px] space-y-6 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm md:p-6 xl:p-8">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-5">
+            <div>
+              <h2 className="m-0 text-2xl font-ArialBold leading-8 text-primary">User Details</h2>
+              <p className="m-0 mt-1 text-sm leading-6 text-slate-500">
+                Review the account and manage its permissions.
+              </p>
+            </div>
+            <Button
+              onClick={() => {
+                setSelectedUser(null);
+                setSearchParams({ section: "roles", view: "users" });
+              }}
+            >
+              Back to Users
+            </Button>
+          </div>
         {selectedUser ? (
-          <div className="max-h-[76vh] overflow-y-auto pr-1">
-            <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+          <div className="min-w-0">
+            <div className="space-y-6">
+            <div className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 to-white p-5 md:p-6">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <h3 className="m-0 text-xl font-ArialBold text-primary">
+                    <h3 className="m-0 break-words text-xl font-ArialBold leading-7 text-primary">
                       {selectedUser.name}
                     </h3>
                     {selectedUser.isSuperAdmin ? <Tag color="gold">Super Admin</Tag> : null}
                   </div>
-                  <p className="m-0 mt-2 text-sm text-slate-500">{selectedUser.email}</p>
+                  <p className="m-0 mt-2 break-all text-sm text-slate-500">{selectedUser.email}</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Tag color={selectedUser.isActive ? "green" : "red"}>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Tag className="m-0" color={selectedUser.isActive ? "green" : "red"}>
                     {selectedUser.isActive ? "Active" : "Inactive"}
                   </Tag>
-                  <Tag color="blue">
+                  <Tag className="m-0" color="blue">
                     {getEnabledUserModules(userPermissionEditorState || {}).length} Modules Enabled
                   </Tag>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-xs text-slate-400">Assigned Role</div>
+            <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="flex min-h-[112px] min-w-0 flex-col justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Assigned Role</div>
                 {selectedUser.isSuperAdmin ? (
                   <div className="mt-1 text-base font-ArialBold text-primary">Super Admin</div>
                 ) : isEmployeeAccount(selectedUser) ? (
@@ -1921,9 +2137,9 @@ const SuperAdmin = () => {
                   />
                 )}
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-xs text-slate-400">Account Type</div>
-                <div className="mt-1 text-base font-ArialBold text-primary">
+              <div className="flex min-h-[112px] min-w-0 flex-col justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Account Type</div>
+                <div className="mt-2 break-words text-base font-ArialBold text-primary">
                   {selectedUser.isSuperAdmin
                     ? "Super Admin"
                     : isEmployeeAccount(selectedUser)
@@ -1931,17 +2147,17 @@ const SuperAdmin = () => {
                     : "Role-based Admin"}
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-xs text-slate-400">Last Login</div>
-                <div className="mt-1 text-base font-ArialBold text-primary">
+              <div className="flex min-h-[112px] min-w-0 flex-col justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Last Login</div>
+                <div className="mt-2 break-words text-base font-ArialBold text-primary">
                   {selectedUser.lastLogin
                     ? new Date(selectedUser.lastLogin).toLocaleString()
                     : "Never"}
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-xs text-slate-400">Created</div>
-                <div className="mt-1 text-base font-ArialBold text-primary">
+              <div className="flex min-h-[112px] min-w-0 flex-col justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Created</div>
+                <div className="mt-2 break-words text-base font-ArialBold text-primary">
                   {selectedUser.createdAt
                     ? new Date(selectedUser.createdAt).toLocaleString()
                     : "Not available"}
@@ -1949,11 +2165,11 @@ const SuperAdmin = () => {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4 md:p-6">
+              <div className="mb-5 flex flex-col gap-3 border-b border-slate-200 pb-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <div className="text-lg font-ArialBold text-primary">Assigned Module Access</div>
-                  <div className="mt-1 text-sm text-slate-500">
+                  <div className="text-lg font-ArialBold leading-7 text-primary">Assigned Module Access</div>
+                  <div className="mt-1 text-sm leading-6 text-slate-500">
                     Manage this user&apos;s modules and permission actions from here
                   </div>
                 </div>
@@ -1969,26 +2185,31 @@ const SuperAdmin = () => {
                 ) : null}
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {RBAC_MODULES.map((moduleKey) => {
                   const moduleEnabled = userPermissionEditorState?.[moduleKey]?.view === true;
                   const enabledActions = getEnabledUserActions(userPermissionEditorState || {}, moduleKey);
+                  const moduleVisual = moduleVisuals[moduleKey];
+                  const ModuleIcon = moduleVisual.icon;
 
                   return (
                     selectedUser.isSuperAdmin ? (
                       <div
                         key={moduleKey}
-                        className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                        className={`flex h-full min-h-[258px] min-w-0 flex-col rounded-2xl border border-slate-200 border-t-4 p-5 shadow-sm ${moduleAccentClasses[moduleVisual.accent]}`}
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-base font-ArialBold text-primary">
-                              {moduleLabels[moduleKey]}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-400">
-                              {moduleEnabled
-                                ? "Module access enabled"
-                                : "Module access not enabled"}
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${moduleIconClasses[moduleVisual.accent]}`}>
+                              <ModuleIcon size={19} strokeWidth={2} />
+                            </span>
+                            <div>
+                              <div className="text-base font-ArialBold text-primary">
+                                {moduleLabels[moduleKey]}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {moduleEnabled ? "Module access enabled" : "Module access not enabled"}
+                              </div>
                             </div>
                           </div>
                           <Tag color={moduleEnabled ? "green" : "default"}>
@@ -1996,7 +2217,7 @@ const SuperAdmin = () => {
                           </Tag>
                         </div>
 
-                        <div className="mt-4 flex flex-wrap gap-2">
+                        <div className="mt-auto flex min-h-[54px] flex-wrap content-start gap-2 pt-4">
                           {enabledActions.length ? (
                             enabledActions.map((action) => (
                               <Tag key={action} color="blue">
@@ -2023,7 +2244,8 @@ const SuperAdmin = () => {
           </div>
           </div>
         ) : null}
-      </Modal>
+        </section>
+      ) : null}
 
       <Modal
         title="Role Details"
@@ -2036,69 +2258,11 @@ const SuperAdmin = () => {
         width={780}
       >
         {selectedRole ? (
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="m-0 text-xl font-ArialBold text-primary">
-                      {selectedRole.name}
-                    </h3>
-                    {selectedRole.isSystem ? <Tag color="blue">System</Tag> : null}
-                  </div>
-                  <p className="m-0 mt-2 text-sm text-slate-500">
-                    {selectedRole.description || "No description added for this role"}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Tag color="gold">{selectedRole.userCount || 0} Users</Tag>
-                  <Tag color="geekblue">
-                    {countEnabledModules(buildPermissionsFromRole(selectedRole))} Modules Enabled
-                  </Tag>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {RBAC_MODULES.map((moduleKey) => {
-                const moduleEnabled =
-                  buildPermissionsFromRole(selectedRole)?.[moduleKey]?.view === true;
-                const enabledActions = getEnabledRoleActions(selectedRole, moduleKey);
-
-                return (
-                  <div
-                    key={moduleKey}
-                    className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-base font-ArialBold text-primary">
-                          {moduleLabels[moduleKey]}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-400">
-                          {moduleEnabled ? "Module access enabled" : "Module access not enabled"}
-                        </div>
-                      </div>
-                      <Tag color={moduleEnabled ? "green" : "default"}>
-                        {moduleEnabled ? "Enabled" : "Disabled"}
-                      </Tag>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {enabledActions.length ? (
-                        enabledActions.map((action) => (
-                          <Tag key={action} color="blue">
-                            {formatActionLabel(action)}
-                          </Tag>
-                        ))
-                      ) : (
-                        <span className="text-sm text-slate-400">No permissions assigned</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+            <h3 className="m-0 text-xl font-ArialBold text-primary">{selectedRole.name}</h3>
+            <p className="m-0 mt-2 text-sm leading-6 text-slate-500">
+              {selectedRole.description || "No description added for this role"}
+            </p>
           </div>
         ) : null}
       </Modal>
