@@ -101,9 +101,9 @@ const getRecordTotalFee = (record) => {
 
 const getRecordDurationMonths = (record) => {
   const duration = Number(
-    record?.course?.duration ||
-      record?.numberOfInstallments ||
+    record?.numberOfInstallments ||
       record?.installments?.length ||
+      record?.course?.duration ||
       1,
   );
 
@@ -362,16 +362,25 @@ const StudentFeeProfile = ({ studentId, studentInfo, onEnrollmentChanged }) => {
 
   const feeStructureRows = useMemo(() => {
     const mapByEnrollmentId = new Map();
+    const mapByStudentCourse = new Map();
     feeStructures.forEach((fs) => {
       const enrollmentId = fs.enrollment?._id || fs.enrollment;
-      if (enrollmentId) {
+      if (enrollmentId && !mapByEnrollmentId.has(String(enrollmentId))) {
         mapByEnrollmentId.set(String(enrollmentId), fs);
+      }
+      const courseId = fs.course?._id || fs.course;
+      const studentCourseKey = `${fs.student?._id || fs.student}:${courseId}`;
+      if (!mapByStudentCourse.has(studentCourseKey)) {
+        mapByStudentCourse.set(studentCourseKey, fs);
       }
     });
 
     const rowsFromEnrollments = enrollments.map((enrollment) => {
       const enrollmentId = String(enrollment._id);
-      const linkedFee = mapByEnrollmentId.get(enrollmentId);
+      const courseId = enrollment.course?._id || enrollment.course;
+      const linkedFee =
+        mapByEnrollmentId.get(enrollmentId) ||
+        mapByStudentCourse.get(`${studentId}:${courseId}`);
 
       if (linkedFee) {
         return {
@@ -410,7 +419,13 @@ const StudentFeeProfile = ({ studentId, studentInfo, onEnrollmentChanged }) => {
     const orphanFeeStructures = feeStructures
       .filter((fs) => {
         const enrollmentId = fs.enrollment?._id || fs.enrollment;
-        return !enrollmentId || !mapByEnrollmentId.has(String(enrollmentId));
+        if (enrollmentId && mapByEnrollmentId.has(String(enrollmentId))) {
+          return false;
+        }
+        const studentCourseKey = `${fs.student?._id || fs.student}:${
+          fs.course?._id || fs.course
+        }`;
+        return !mapByStudentCourse.has(studentCourseKey);
       })
       .map((fs) => ({
         ...fs,
@@ -419,7 +434,7 @@ const StudentFeeProfile = ({ studentId, studentInfo, onEnrollmentChanged }) => {
       }));
 
     return [...rowsFromEnrollments, ...orphanFeeStructures];
-  }, [enrollments, feeStructures]);
+  }, [enrollments, feeStructures, studentId]);
 
   const sortedPayments = useMemo(() => {
     return [...payments].sort((a, b) => {
@@ -433,15 +448,11 @@ const StudentFeeProfile = ({ studentId, studentInfo, onEnrollmentChanged }) => {
   }, [payments]);
 
   const getSortedInstallments = (installments = []) => {
-    return [...installments].sort((a, b) => {
-      const dateDiff =
-        getTimeValue(getInstallmentSortDate(a)) -
-        getTimeValue(getInstallmentSortDate(b));
-
-      if (dateDiff !== 0) return dateDiff;
-
-      return (a.installmentNumber || 0) - (b.installmentNumber || 0);
-    });
+    return [...installments].sort(
+      (left, right) =>
+        Number(left.installmentNumber || 0) -
+        Number(right.installmentNumber || 0),
+    );
   };
 
   const totalFee = feeStructureRows.reduce((sum, fs) => {
@@ -1159,7 +1170,8 @@ const StudentFeeProfile = ({ studentId, studentInfo, onEnrollmentChanged }) => {
 
         const paid =
           record.installments?.filter((i) => i.status === "Paid").length || 0;
-        const total = record.numberOfInstallments || 0;
+        const total =
+          record.installments?.length || record.numberOfInstallments || 0;
 
         const amounts = record.installments?.map((i) => i.amount) || [];
         const hasVaryingAmounts =

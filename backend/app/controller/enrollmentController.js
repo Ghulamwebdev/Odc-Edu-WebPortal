@@ -6,6 +6,11 @@ import CourseSchema from "../modules/courseModule.js";
 import BatchSchema from "../modules/batchModule.js";
 import { calculateInstallmentPlan } from "../utils/installmentCalculator.js";
 import { syncStudentRegistrationNo } from "../utils/registrationNumberSync.js";
+import {
+  getCourseInstallmentCount,
+  getMonthlyCourseInstallmentAmount,
+  mergeInstallmentsPreservingPaid,
+} from "../utils/installmentExtension.js";
 
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const clamp = (value, min, max) =>
@@ -247,140 +252,6 @@ const normalizeInstallments = ({
 
   const targetTotal = round2(totalAmount);
   return rebalanceInstallmentsToTarget(normalized, targetTotal);
-};
-
-const mergeInstallmentsPreservingPaid = (
-  existingInstallments = [],
-  updatedInstallments = [],
-  targetTotal,
-) => {
-  const paidInstallments = (Array.isArray(existingInstallments) ? existingInstallments : [])
-    .filter(
-      (installment) =>
-        Number(installment?.paidAmount || 0) > 0 ||
-        ["Paid", "Partial"].includes(installment?.status),
-    )
-    .map((installment) => ({
-      ...installment,
-      installmentNumber: Number(installment.installmentNumber),
-    }));
-
-  const paidByNumber = new Map(
-    paidInstallments.map((installment) => [installment.installmentNumber, installment]),
-  );
-  const merged = (Array.isArray(updatedInstallments) ? updatedInstallments : []).map(
-    (installment) =>
-      paidByNumber.get(Number(installment.installmentNumber)) || installment,
-  );
-
-  for (const paidInstallment of paidInstallments) {
-    if (
-      !merged.some(
-        (installment) =>
-          Number(installment.installmentNumber) === paidInstallment.installmentNumber,
-      )
-    ) {
-      merged.push(paidInstallment);
-    }
-  }
-
-  const sortedInstallments = merged.sort(
-    (left, right) => Number(left.installmentNumber) - Number(right.installmentNumber),
-  );
-
-  if (!hasDefinedValue(targetTotal)) return sortedInstallments;
-
-  const paidNumbers = new Set(paidInstallments.map((item) => item.installmentNumber));
-  const paidTotal = getInstallmentsTotal(
-    sortedInstallments.filter((item) =>
-      paidNumbers.has(Number(item.installmentNumber)),
-    ),
-  );
-  const targetUnpaidTotal = round2(Math.max(0, Number(targetTotal) - paidTotal));
-  const unpaidInstallments = sortedInstallments.filter(
-    (item) => !paidNumbers.has(Number(item.installmentNumber)),
-  );
-
-  if (unpaidInstallments.length === 0 && targetUnpaidTotal > 0) {
-    const lastInstallment = sortedInstallments[sortedInstallments.length - 1];
-    sortedInstallments.push({
-      installmentNumber: Number(lastInstallment?.installmentNumber || 0) + 1,
-      description: "Additional Installment",
-      feeComponents: {
-        admissionFee: 0,
-        courseFee: targetUnpaidTotal,
-        certificateFee: 0,
-        examFee: 0,
-        registrationFee: 0,
-        practicalFee: 0,
-        otherFee: 0,
-      },
-      amount: targetUnpaidTotal,
-      dueDate: addMonths(lastInstallment?.dueDate || new Date(), 1),
-      status: "Pending",
-      paidAmount: 0,
-    });
-    return sortedInstallments;
-  }
-
-  const currentUnpaidTotal = getInstallmentsTotal(unpaidInstallments);
-  let assignedAmount = 0;
-  const lastUnpaid = unpaidInstallments[unpaidInstallments.length - 1];
-
-  sortedInstallments.forEach((installment) => {
-    if (paidNumbers.has(Number(installment.installmentNumber))) return;
-
-    const isLastUnpaid = installment === lastUnpaid;
-    const amount =
-      currentUnpaidTotal > 0 && !isLastUnpaid
-        ? round2(
-            (Number(installment.amount || 0) / currentUnpaidTotal) *
-              targetUnpaidTotal,
-          )
-        : isLastUnpaid
-          ? round2(targetUnpaidTotal - assignedAmount)
-          : 0;
-    assignedAmount = round2(assignedAmount + amount);
-
-    const components = Object.entries(installment.feeComponents || {}).filter(
-      ([key]) =>
-        [
-          "admissionFee",
-          "courseFee",
-          "certificateFee",
-          "examFee",
-          "registrationFee",
-          "practicalFee",
-          "otherFee",
-        ].includes(key),
-    );
-    const componentTotal = round2(
-      components.reduce((sum, [, value]) => sum + Number(value || 0), 0),
-    );
-    let assignedComponents = 0;
-    const feeComponents = Object.fromEntries(
-      components.map(([key, value], index) => {
-        const isLastComponent = index === components.length - 1;
-        const componentAmount =
-          componentTotal > 0 && !isLastComponent
-            ? round2((Number(value || 0) / componentTotal) * amount)
-            : isLastComponent
-              ? round2(amount - assignedComponents)
-              : 0;
-        assignedComponents = round2(assignedComponents + componentAmount);
-        return [key, componentAmount];
-      }),
-    );
-
-    if (components.length === 0) {
-      feeComponents.courseFee = amount;
-    }
-
-    installment.amount = amount;
-    installment.feeComponents = feeComponents;
-  });
-
-  return sortedInstallments;
 };
 
 // Create enrollment for a student
@@ -633,6 +504,14 @@ export const createEnrollment = async (req, res) => {
     const finalAmount = resolvedInstallments.length
       ? getInstallmentsTotal(resolvedInstallments)
       : resolvedFinalFee;
+    const resolvedCourseInstallmentCount = clamp(
+      numberOfInstallments ||
+        getCourseInstallmentCount(resolvedInstallments) ||
+        resolvedInstallments.length ||
+        1,
+      1,
+      24,
+    );
 
     const feeStructure = new FeeStructureSchema({
       student: studentId,
@@ -655,7 +534,7 @@ export const createEnrollment = async (req, res) => {
       discountOnCourseFee: Math.round(amountDiscount),
       remainingAmount: finalAmount,
       installmentEnabled: resolvedInstallments.length > 1,
-      numberOfInstallments: resolvedInstallments.length,
+      numberOfInstallments: resolvedCourseInstallmentCount,
       installments: resolvedInstallments,
       feeStatus: "Unpaid",
       systemGrantedNumber: systemGrantedNumber,
@@ -732,9 +611,15 @@ export const getStudentEnrollments = async (req, res) => {
     // Fetch fee structure for each enrollment
     const enrollmentsWithFees = await Promise.all(
       enrollments.map(async (enrollment) => {
-        const feeStructure = await FeeStructureSchema.findOne({
+        let feeStructure = await FeeStructureSchema.findOne({
           enrollment: enrollment._id,
-        });
+        }).sort({ updatedAt: -1, createdAt: -1 });
+        if (!feeStructure) {
+          feeStructure = await FeeStructureSchema.findOne({
+            student: enrollment.student?._id || enrollment.student,
+            course: enrollment.course?._id || enrollment.course,
+          }).sort({ updatedAt: -1, createdAt: -1 });
+        }
 
         return {
           ...enrollment.toObject(),
@@ -901,12 +786,67 @@ export const updateEnrollmentStatus = async (req, res) => {
           preserveExactAmounts: true,
         })
       : [];
-    const existingFeeStructure = await FeeStructureSchema.findOne({ enrollment: enrollmentId }).lean();
+    let existingFeeStructure = await FeeStructureSchema.findOne({
+      enrollment: enrollmentId,
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+    const feeStructureCourseId = courseId || existingEnrollment.course;
+    if (!existingFeeStructure) {
+      existingFeeStructure = await FeeStructureSchema.findOne({
+        student: existingEnrollment.student,
+        course: feeStructureCourseId,
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean();
+    }
+    const storedCourseInstallmentCount = Number(
+      existingFeeStructure?.numberOfInstallments || 0,
+    );
+    const actualCourseInstallmentCount = getCourseInstallmentCount(
+      existingFeeStructure?.installments,
+    );
+    const existingScheduleCount =
+      existingFeeStructure?.installments?.length || 0;
+    const additionalInstallmentCount = (
+      existingFeeStructure?.additionalFees || []
+    ).reduce(
+      (count, fee) =>
+        count +
+        (fee?.paymentMode === "two_installments"
+          ? 2
+          : Number(fee?.numberOfInstallments) || 1),
+      0,
+    );
+    const legacyCourseInstallmentCount =
+      actualCourseInstallmentCount ||
+      Math.max(0, existingScheduleCount - additionalInstallmentCount);
+    const hasLegacyTotalInstallmentCount =
+      storedCourseInstallmentCount === existingScheduleCount &&
+      legacyCourseInstallmentCount > 0 &&
+      legacyCourseInstallmentCount < existingScheduleCount;
+    const existingBaseInstallmentCount =
+      (hasLegacyTotalInstallmentCount
+        ? legacyCourseInstallmentCount
+        : storedCourseInstallmentCount || actualCourseInstallmentCount) || 1;
+    const isInstallmentExtension =
+      Boolean(existingFeeStructure) &&
+      Number(numberOfInstallments || 1) > existingBaseInstallmentCount;
+    const monthlyCourseAmount = isInstallmentExtension
+      ? getMonthlyCourseInstallmentAmount(
+          existingFeeStructure?.installments,
+          normalizedInstallments,
+        )
+      : null;
     const mergedInstallments = normalizedInstallments.length
       ? mergeInstallmentsPreservingPaid(
           existingFeeStructure?.installments,
           normalizedInstallments,
           finalFee ?? totalFee,
+          {
+            preserveScheduledAmounts: isInstallmentExtension,
+            monthlyCourseAmount,
+          },
         )
       : [];
     const requestedTotal = hasDefinedValue(finalFee ?? totalFee)
@@ -919,34 +859,103 @@ export const updateEnrollmentStatus = async (req, res) => {
       feeStructureUpdate.totalFee = requestedTotal ?? resolvedTotal;
     }
     if (paymentPlanType) feeStructureUpdate.paymentPlanType = paymentPlanType;
+    const shouldUpdateFeeStructure = Object.keys(feeStructureUpdate).length > 0;
+    if (shouldUpdateFeeStructure) {
+      feeStructureUpdate.enrollment = enrollmentId;
+    }
     if (numberOfInstallments !== undefined) {
       feeStructureUpdate.numberOfInstallments = numberOfInstallments;
       feeStructureUpdate.installmentEnabled = numberOfInstallments > 1;
     }
     if (mergedInstallments.length > 0) {
       feeStructureUpdate.installments = mergedInstallments;
-      feeStructureUpdate.numberOfInstallments = mergedInstallments.length;
+      feeStructureUpdate.numberOfInstallments =
+        Number(numberOfInstallments) ||
+        existingBaseInstallmentCount ||
+        mergedInstallments.length;
       feeStructureUpdate.installmentEnabled = mergedInstallments.length > 1;
       feeStructureUpdate.totalFee = resolvedTotal;
+      if (
+        isInstallmentExtension &&
+        requestedTotal !== undefined &&
+        resolvedTotal > requestedTotal
+      ) {
+        feeStructureUpdate.courseFee = round2(
+          Number(feeStructureUpdate.courseFee ?? existingFeeStructure?.courseFee ?? 0) +
+            (resolvedTotal - requestedTotal),
+        );
+      }
+      if (monthlyCourseAmount > 0) {
+        feeStructureUpdate.installmentAmount = monthlyCourseAmount;
+      }
     }
 
-    if (Object.keys(feeStructureUpdate).length > 0) {
+    if (shouldUpdateFeeStructure) {
       feeStructureUpdate.systemGrantedNumber = syncedRegistrationNo;
       // Recalculate remainingAmount = totalFee - paidAmount
       if (feeStructureUpdate.totalFee !== undefined) {
         const paidAmount = round2(existingFeeStructure?.paidAmount || 0);
         feeStructureUpdate.remainingAmount = round2(feeStructureUpdate.totalFee - paidAmount);
+        feeStructureUpdate.feeStatus =
+          paidAmount <= 0
+            ? "Unpaid"
+            : paidAmount >= feeStructureUpdate.totalFee
+              ? "Paid"
+              : "Partial";
       }
-      await FeeStructureSchema.findOneAndUpdate(
-        { enrollment: enrollmentId },
-        { $set: feeStructureUpdate },
-        { new: true },
-      );
+      if (existingFeeStructure) {
+        await FeeStructureSchema.findByIdAndUpdate(
+          existingFeeStructure._id,
+          { $set: feeStructureUpdate },
+          { new: true },
+        );
+      } else {
+        const course = await CourseSchema.findById(feeStructureCourseId).lean();
+        const totalFee = round2(feeStructureUpdate.totalFee || 0);
+        const paidAmount = 0;
+        const feeStructure = new FeeStructureSchema({
+          student: existingEnrollment.student,
+          course: feeStructureCourseId,
+          enrollment: enrollmentId,
+          admissionFee: feeStructureUpdate.admissionFee ?? course?.admissionFee ?? 0,
+          courseFee: feeStructureUpdate.courseFee ?? course?.courseFee ?? 0,
+          certificateFee:
+            feeStructureUpdate.certificateFee ?? course?.certificateFee ?? 0,
+          examFee: feeStructureUpdate.examFee ?? course?.examFee ?? 0,
+          registrationFee:
+            feeStructureUpdate.registrationFee ?? course?.registrationFee ?? 0,
+          practicalFee:
+            feeStructureUpdate.practicalFee ?? course?.practicalFee ?? 0,
+          otherFee: feeStructureUpdate.otherFee ?? course?.otherFee ?? 0,
+          additionalFees: feeStructureUpdate.additionalFees || [],
+          discount: feeStructureUpdate.discount || 0,
+          discountPercentage: feeStructureUpdate.discountPercentage || 0,
+          discountOnCourseFee: feeStructureUpdate.discountOnCourseFee || 0,
+          paymentPlanType: feeStructureUpdate.paymentPlanType || "custom",
+          totalFee,
+          paidAmount,
+          remainingAmount: totalFee - paidAmount,
+          feeStatus: "Unpaid",
+          installmentEnabled: Boolean(feeStructureUpdate.installmentEnabled),
+          numberOfInstallments:
+            Number(feeStructureUpdate.numberOfInstallments) ||
+            getCourseInstallmentCount(mergedInstallments) ||
+            1,
+          installmentAmount:
+            Number(feeStructureUpdate.installmentAmount) || totalFee,
+          installments: mergedInstallments,
+          systemGrantedNumber: syncedRegistrationNo,
+        });
+        await feeStructure.save();
+      }
     }
 
     // Fetch the latest fee structure to include in response so client sees
     // the definitive persisted installments/fees immediately.
-    const latestFeeStructure = await FeeStructureSchema.findOne({ enrollment: enrollmentId })
+    const latestFeeStructure = await FeeStructureSchema.findOne({
+      enrollment: enrollmentId,
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
       .lean();
 
     res.status(200).json({
@@ -997,18 +1006,44 @@ export const getAllEnrollments = async (req, res) => {
     // Attach feeStructure to each enrollment in one server-side batch
     // This avoids N+1 round-trips from the client
     const enrollmentIds = enrollments.map((e) => e._id);
+    const enrollmentPairs = enrollments.map((enrollment) => ({
+      student: enrollment.student?._id || enrollment.student,
+      course: enrollment.course?._id || enrollment.course,
+    }));
     const feeStructures = await FeeStructureSchema.find({
-      enrollment: { $in: enrollmentIds },
-    }).lean();
+      ...(enrollmentPairs.length
+        ? {
+            $or: [
+              { enrollment: { $in: enrollmentIds } },
+              ...enrollmentPairs,
+            ],
+          }
+        : { enrollment: { $in: [] } }),
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
 
     const feeMap = {};
+    const feeMapByStudentCourse = {};
     feeStructures.forEach((fs) => {
-      feeMap[fs.enrollment.toString()] = fs;
+      const enrollmentKey = fs.enrollment?.toString();
+      if (enrollmentKey && !feeMap[enrollmentKey]) {
+        feeMap[enrollmentKey] = fs;
+      }
+      const studentCourseKey = `${fs.student}:${fs.course}`;
+      if (!feeMapByStudentCourse[studentCourseKey]) {
+        feeMapByStudentCourse[studentCourseKey] = fs;
+      }
     });
 
     const enriched = enrollments.map((e) => ({
       ...e.toObject(),
-      feeStructure: feeMap[e._id.toString()] || null,
+      feeStructure:
+        feeMap[e._id.toString()] ||
+        feeMapByStudentCourse[
+          `${e.student?._id || e.student}:${e.course?._id || e.course}`
+        ] ||
+        null,
     }));
 
     const total = await EnrollmentSchema.countDocuments(filter);

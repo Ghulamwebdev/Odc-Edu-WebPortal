@@ -212,8 +212,8 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   const [detailAttemptsLoading, setDetailAttemptsLoading] = useState(false);
   const [detailFilters, setDetailFilters] = useState({
     batchIds: [],
-    result: "all",
-    answerResult: "all",
+    results: ["all"],
+    answerResults: ["all"],
     search: "",
   });
   const [shareForm] = Form.useForm();
@@ -327,17 +327,25 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
     const orderedAttempts = [
       ...rankedDetailAttempts.slice(0, 3),
       ...rankedDetailAttempts.slice(3),
-      ...detailAttempts.filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status)),
+      ...detailAttempts
+        .filter((attempt) => !["submitted", "auto_submitted", "graded"].includes(attempt.status))
+        .sort((left, right) =>
+          String(left.student?.studentName || "").localeCompare(
+            String(right.student?.studentName || ""),
+          ),
+        ),
     ];
 
     return orderedAttempts.filter((attempt) => {
       const batchId = String(attempt.batch?._id || attempt.batch || "");
       const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
+      const selectedResults = detailFilters.results || [];
       const matchesResult =
-        detailFilters.result === "all" ||
-        (detailFilters.result === "remaining" && !isSubmitted) ||
-        (detailFilters.result === "passed" && isSubmitted && attempt.passed) ||
-        (detailFilters.result === "failed" && isSubmitted && !attempt.passed);
+        !selectedResults.length ||
+        selectedResults.includes("all") ||
+        (selectedResults.includes("remaining") && !isSubmitted) ||
+        (selectedResults.includes("passed") && isSubmitted && attempt.passed) ||
+        (selectedResults.includes("failed") && isSubmitted && !attempt.passed);
       const answerCounts = (attempt.answers || []).reduce(
         (counts, answer) => {
           const answered = (answer.selectedOptions || []).length > 0 || Boolean(String(answer.textAnswer || "").trim());
@@ -349,11 +357,18 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         },
         { right: 0, wrong: 0, needsReview: 0 },
       );
+      const selectedAnswerResults = detailFilters.answerResults || [];
       const matchesAnswerResult =
-        detailFilters.answerResult === "all" ||
-        (detailFilters.answerResult === "has_wrong" && answerCounts.wrong > 0) ||
-        (detailFilters.answerResult === "all_right" && isSubmitted && answerCounts.right > 0 && !answerCounts.wrong && !answerCounts.needsReview) ||
-        (detailFilters.answerResult === "needs_review" && answerCounts.needsReview > 0);
+        !selectedAnswerResults.length ||
+        selectedAnswerResults.includes("all") ||
+        (selectedAnswerResults.includes("has_wrong") && answerCounts.wrong > 0) ||
+        (selectedAnswerResults.includes("all_right") &&
+          isSubmitted &&
+          answerCounts.right > 0 &&
+          !answerCounts.wrong &&
+          !answerCounts.needsReview) ||
+        (selectedAnswerResults.includes("needs_review") &&
+          answerCounts.needsReview > 0);
       const searchValue = [
         attempt.student?.studentName,
         attempt.student?.registrationNo,
@@ -373,6 +388,16 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       );
     });
   }, [detailAttempts, detailFilters, rankedDetailAttempts]);
+  const visibleAttemptSerialNumbers = useMemo(
+    () =>
+      new Map(
+        visibleDetailAttempts.map((attempt, index) => [
+          String(attempt._id),
+          index + 1,
+        ]),
+      ),
+    [visibleDetailAttempts],
+  );
 
   const testStudioBasePath = employeeMode
     ? "/employee-dashboard/test-studio"
@@ -415,7 +440,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
   useEffect(() => {
     if (!detailMode || !routeTestId) return;
 
-    setDetailFilters({ batchIds: [], result: "all", answerResult: "all", search: "" });
+    setDetailFilters({ batchIds: [], results: ["all"], answerResults: ["all"], search: "" });
     const loadDetailTest = async () => {
       setLoading(true);
       try {
@@ -1564,10 +1589,30 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
           .filter(Boolean)
           .join(", ")
         : "All assigned batches";
+      const selectedResults = detailFilters.results || [];
+      const selectedAnswerResults = detailFilters.answerResults || [];
+      const resultLabels = {
+        passed: "Passed",
+        failed: "Failed",
+        remaining: "Not submitted",
+      };
+      const answerResultLabels = {
+        has_wrong: "Has wrong answers",
+        all_right: "All attempted answers right",
+        needs_review: "Needs manual review",
+      };
       const filterSummary = [
         `Batch: ${selectedBatchNames || "Selected batches"}`,
-        `Result: ${detailFilters.result === "all" ? "All" : detailFilters.result.replaceAll("_", " ")}`,
-        `Answer filter: ${detailFilters.answerResult === "all" ? "All" : detailFilters.answerResult.replaceAll("_", " ")}`,
+        `Result: ${
+          !selectedResults.length || selectedResults.includes("all")
+            ? "All"
+            : selectedResults.map((result) => resultLabels[result]).filter(Boolean).join(", ")
+        }`,
+        `Answer filter: ${
+          !selectedAnswerResults.length || selectedAnswerResults.includes("all")
+            ? "All"
+            : selectedAnswerResults.map((result) => answerResultLabels[result]).filter(Boolean).join(", ")
+        }`,
         detailFilters.search.trim() ? `Search: ${detailFilters.search.trim()}` : null,
       ].filter(Boolean).join(" | ");
       const sortedAttempts = [
@@ -1620,7 +1665,9 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
       headerY += 7;
       doc.setFont("helvetica", "bold");
       doc.setFontSize(12);
-      doc.text(test.title || "Test Results", margin, headerY);
+      doc.text(test.title || "Test Results", pageWidth / 2, headerY, {
+        align: "center",
+      });
       headerY += 5;
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
@@ -1628,29 +1675,30 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         `Course: ${courseNames.join(", ") || test.course?.courseName || "N/A"}  |  Topic: ${test.topic || "N/A"}`,
         pageWidth - margin * 2,
       );
-      doc.text(courseLines, margin, headerY);
+      doc.text(courseLines, pageWidth / 2, headerY, { align: "center" });
       headerY += courseLines.length * 4;
       const filterLines = doc.splitTextToSize(
         `Generated: ${dayjs().format("DD MMM YYYY, hh:mm A")}  |  Filters: ${filterSummary}`,
         pageWidth - margin * 2,
       );
-      doc.text(filterLines, margin, headerY);
+      doc.text(filterLines, pageWidth / 2, headerY, { align: "center" });
       const summaryY = headerY + filterLines.length * 4 + 2;
       doc.text(
         `Students in report: ${filteredAttempts.length}  |  Submitted: ${submitted.length}  |  Passed: ${totals.passed}  |  Failed: ${submitted.length - totals.passed}  |  Marks: ${test.totalMarks || 0}  |  Passing marks: ${test.passingMarks || 0}`,
-        margin,
+        pageWidth / 2,
         summaryY,
-        { maxWidth: pageWidth - margin * 2 },
+        { align: "center", maxWidth: pageWidth - margin * 2 },
       );
 
       autoTable(doc, {
         startY: summaryY + 6,
-        head: [["Position", "Student", "Registration", "Batch", "Status", "Score", "Percent", "Result", "Answer summary", "Submitted"]],
-        body: sortedAttempts.map((attempt) => {
+        head: [["S.No.", "Position", "Student", "Registration", "Batch", "Status", "Score", "Percent", "Result", "Answer summary", "Submitted"]],
+        body: sortedAttempts.map((attempt, index) => {
           const position = positionByAttemptId.get(String(attempt._id));
           const isSubmitted = ["submitted", "auto_submitted", "graded"].includes(attempt.status);
           const counts = answerSummary(attempt);
           return [
+            index + 1,
             position ? `${position}${position === 1 ? "st" : position === 2 ? "nd" : "rd"}` : "-",
             attempt.student?.studentName || "Student",
             attempt.student?.registrationNo || "N/A",
@@ -1669,6 +1717,7 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
         styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak" },
         headStyles: { fillColor: [1, 19, 76], textColor: [255, 255, 255], fontStyle: "bold" },
         alternateRowStyles: { fillColor: [245, 247, 250] },
+        columnStyles: { 0: { cellWidth: 10 }, 1: { cellWidth: 15 } },
         margin: { left: 14, right: 14, bottom: 14 },
       });
       const pageCount = doc.getNumberOfPages();
@@ -2593,7 +2642,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 <Button
                   size="small"
                   icon={<DownloadOutlined />}
-                  onClick={() => downloadTestResultsPdf(detailTest, visibleDetailAttempts)}
+                  onClick={() =>
+                    downloadTestResultsPdf(
+                      detailTest,
+                      visibleDetailAttempts,
+                    )
+                  }
                 >
                   Download Results PDF
                 </Button>
@@ -2605,7 +2659,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               <Button
                 size="small"
                 icon={<DownloadOutlined />}
-                onClick={() => downloadTestResultsPdf(detailTest, visibleDetailAttempts)}
+                onClick={() =>
+                  downloadTestResultsPdf(
+                    detailTest,
+                    visibleDetailAttempts,
+                  )
+                }
               >
                 Download Results PDF
               </Button>
@@ -2654,8 +2713,19 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
               )}
             />
             <Select
-              value={detailFilters.result}
-              onChange={(result) => setDetailFilters((current) => ({ ...current, result }))}
+              mode="multiple"
+              allowClear
+              value={detailFilters.results}
+              onChange={(results) => {
+                const hasAllOption = results.includes("all");
+                const hadAllOption = detailFilters.results.includes("all");
+                const nextResults = hasAllOption && !hadAllOption
+                  ? ["all"]
+                  : results.filter((result) => result !== "all");
+                setDetailFilters((current) => ({ ...current, results: nextResults }));
+              }}
+              placeholder="All results"
+              maxTagCount="responsive"
               className="md:min-w-40"
               options={[
                 { label: "All results", value: "all" },
@@ -2663,10 +2733,31 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 { label: "Failed", value: "failed" },
                 { label: "Not submitted", value: "remaining" },
               ]}
+              optionRender={(option) => (
+                <Checkbox
+                  checked={option.value === "all"
+                    ? !detailFilters.results.length || detailFilters.results.includes("all")
+                    : detailFilters.results.includes(String(option.value))}
+                  style={{ pointerEvents: "none" }}
+                >
+                  {option.label}
+                </Checkbox>
+              )}
             />
             <Select
-              value={detailFilters.answerResult}
-              onChange={(answerResult) => setDetailFilters((current) => ({ ...current, answerResult }))}
+              mode="multiple"
+              allowClear
+              value={detailFilters.answerResults}
+              onChange={(answerResults) => {
+                const hasAllOption = answerResults.includes("all");
+                const hadAllOption = detailFilters.answerResults.includes("all");
+                const nextAnswerResults = hasAllOption && !hadAllOption
+                  ? ["all"]
+                  : answerResults.filter((result) => result !== "all");
+                setDetailFilters((current) => ({ ...current, answerResults: nextAnswerResults }));
+              }}
+              placeholder="All answer results"
+              maxTagCount="responsive"
               className="md:min-w-48"
               options={[
                 { label: "All answer results", value: "all" },
@@ -2674,6 +2765,16 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
                 { label: "All attempted answers right", value: "all_right" },
                 { label: "Needs manual review", value: "needs_review" },
               ]}
+              optionRender={(option) => (
+                <Checkbox
+                  checked={option.value === "all"
+                    ? !detailFilters.answerResults.length || detailFilters.answerResults.includes("all")
+                    : detailFilters.answerResults.includes(String(option.value))}
+                  style={{ pointerEvents: "none" }}
+                >
+                  {option.label}
+                </Checkbox>
+              )}
             />
           </div>
           <Table
@@ -2684,6 +2785,12 @@ const TestStudio = ({ setupMode = false, detailMode = false }) => {
             scroll={{ y: 560 }}
             tableLayout="fixed"
             columns={[
+              {
+                title: "S.No.",
+                width: 72,
+                render: (_, attempt) =>
+                  visibleAttemptSerialNumbers.get(String(attempt._id)) || "-",
+              },
               {
                 title: "Position",
                 render: (_, attempt) => {

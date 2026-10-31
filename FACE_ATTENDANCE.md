@@ -1,4 +1,4 @@
-# Face Attendance
+ nabk  k vl L  MMVJKL XC C,# Face Attendance
 
 Face attendance uses the locally bundled `@vladmandic/face-api` detector,
 landmark, and face-recognition models. The browser creates 128-value face

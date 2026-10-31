@@ -1036,7 +1036,11 @@ const StudentProfile = () => {
                       />
                     </div>
                     <Table
-                      dataSource={record.feeStructure.installments}
+                      dataSource={[...record.feeStructure.installments].sort(
+                        (left, right) =>
+                          Number(left.installmentNumber || 0) -
+                          Number(right.installmentNumber || 0),
+                      )}
                       columns={installmentColumns}
                       rowKey="installmentNumber"
                       pagination={false}

@@ -405,8 +405,14 @@ When an administrator changes a fee or the installment count on an existing
 enrollment, the installment schedule is regenerated from the updated values.
 Additional-fee installment rows are excluded from the base installment count
 when the form is reopened, so those rows are not duplicated on the next save.
-Previously paid installments are retained; the unpaid schedule is adjusted to
-the revised total and the updated fee structure is returned to the student view.
+Previously paid installments are retained. When the course installment count is
+extended, new course installments keep the existing monthly course-fee amount;
+the course total increases as needed instead of shrinking the added installments
+to fit the previous total. Existing paid rows with conflicting installment
+numbers are preserved and new rows are assigned unused numbers.
+When legacy duplicate fee structures exist for an enrollment, edit and read
+operations use the most recently updated record so student and admin views show
+the same installment schedule.
 
 ---
 

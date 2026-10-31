@@ -9,6 +9,7 @@ import {
   calculateRefund,
 } from "../utils/installmentCalculator.js";
 import { createAutoAccountingEntry } from "../utils/autoAccountingEntry.js";
+import { getCourseInstallmentCount } from "../utils/installmentExtension.js";
 
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const clamp = (value, min, max) =>
@@ -313,10 +314,15 @@ const findRawFeeStructure = async ({ feeStructureId, studentId, courseId }) => {
   const studentVariants = await getIdVariants(studentId);
   const courseVariants = await getIdVariants(courseId);
 
-  return db.collection("feestructures").findOne({
-    student: { $in: studentVariants },
-    course: { $in: courseVariants },
-  });
+  return db
+    .collection("feestructures")
+    .find({
+      student: { $in: studentVariants },
+      course: { $in: courseVariants },
+    })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .limit(1)
+    .next();
 };
 
 const getRawStudentAndCourse = async (studentId, courseId) => {
@@ -497,8 +503,15 @@ export const createOrUpdateFeeStructure = async (req, res) => {
       });
     }
 
-    const resolvedInstallmentCount = normalizedInstallments.length || 1;
-    const resolvedInstallmentEnabled = resolvedInstallmentCount > 1;
+    const resolvedInstallmentCount = clamp(
+      numberOfInstallments ||
+        getCourseInstallmentCount(normalizedInstallments) ||
+        normalizedInstallments.length ||
+        1,
+      1,
+      24,
+    );
+    const resolvedInstallmentEnabled = normalizedInstallments.length > 1;
     const resolvedTotalFee = normalizedInstallments.length
       ? round2(
           normalizedInstallments.reduce(
@@ -512,7 +525,7 @@ export const createOrUpdateFeeStructure = async (req, res) => {
     let feeStructure = await FeeStructureSchema.findOne({
       student: studentId,
       course: courseId,
-    });
+    }).sort({ updatedAt: -1, createdAt: -1 });
 
     if (feeStructure) {
       // Update existing fee structure
@@ -602,6 +615,7 @@ export const getFeeStructure = async (req, res) => {
       student: studentId,
       course: courseId,
     })
+      .sort({ updatedAt: -1, createdAt: -1 })
       .populate(
         "student",
         "registrationNo studentName mobileNumber emailAddress",
@@ -638,12 +652,27 @@ export const getStudentFeeStructures = async (req, res) => {
     const feeStructures = await FeeStructureSchema.find({ student: studentId })
       .populate("course", "courseName courseId totalFee")
       .populate("enrollment", "status enrollmentDate")
-      .sort({ createdAt: -1 });
+      .sort({ updatedAt: -1, createdAt: -1 });
+
+    const latestFeeStructures = [];
+    const seenFeeStructures = new Set();
+    feeStructures.forEach((feeStructure) => {
+      const enrollmentId =
+        feeStructure.enrollment?._id || feeStructure.enrollment;
+      const key = enrollmentId
+        ? `enrollment:${enrollmentId}`
+        : `course:${feeStructure.student?._id || feeStructure.student}:${
+            feeStructure.course?._id || feeStructure.course
+          }`;
+      if (seenFeeStructures.has(key)) return;
+      seenFeeStructures.add(key);
+      latestFeeStructures.push(feeStructure);
+    });
 
     res.status(200).json({
       success: true,
       message: "Fee structures retrieved successfully",
-      data: feeStructures,
+      data: latestFeeStructures,
     });
   } catch (error) {
     console.error("Error retrieving fee structures:", error);
@@ -1375,7 +1404,9 @@ export const calculateRefundAmount = async (req, res) => {
     const feeStructure = await FeeStructureSchema.findOne({
       student: studentId,
       course: courseId,
-    }).populate("course", "duration");
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .populate("course", "duration");
 
     if (!feeStructure) {
       return res.status(404).json({

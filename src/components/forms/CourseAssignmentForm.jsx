@@ -68,6 +68,13 @@ const addMonths = (dateValue, monthsToAdd) => {
   return dayjs(date);
 };
 
+const sortInstallmentsByNumber = (installments = []) =>
+  [...installments].sort(
+    (left, right) =>
+      Number(left.installmentNumber || 0) -
+      Number(right.installmentNumber || 0),
+  );
+
 const createAdditionalFeeRow = () => ({
   id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
   feeType: "exam",
@@ -132,6 +139,13 @@ const getAdditionalFeeInstallmentCount = (rows = []) =>
     0,
   );
 
+const getCourseInstallmentCount = (installments = []) =>
+  installments.filter(
+    (installment) =>
+      Number(installment?.feeComponents?.courseFee || 0) > 0 ||
+      String(installment?.description || "").toLowerCase().includes("course fee"),
+  ).length;
+
 const buildDistributedValues = (amount, count) => {
   const safeAmount = round2(amount);
   const safeCount = Math.max(1, Math.min(24, Number(count) || 1));
@@ -157,6 +171,39 @@ const getFeeComponentKey = (feeType) => {
   if (feeType === "practical") return "practicalFee";
   return "otherFee";
 };
+
+const getInstallmentFeeTypes = (installment) =>
+  Object.entries(installment?.feeComponents || {})
+    .filter(([, amount]) => Number(amount || 0) > 0)
+    .map(([feeType]) => feeType);
+
+const isSameInstallmentType = (left, right) => {
+  const leftTypes = getInstallmentFeeTypes(left);
+  const rightTypes = getInstallmentFeeTypes(right);
+
+  if (!leftTypes.length || !rightTypes.length) {
+    return (
+      String(left?.description || "").trim().toLowerCase() ===
+      String(right?.description || "").trim().toLowerCase()
+    );
+  }
+
+  return leftTypes.some((feeType) => rightTypes.includes(feeType));
+};
+
+const findMatchingInstallment = (installments, target) =>
+  installments.find(
+    (installment) =>
+      Number(installment.installmentNumber) ===
+        Number(target.installmentNumber) &&
+      isSameInstallmentType(installment, target),
+  ) ||
+  installments.find(
+    (installment) =>
+      String(installment.description || "").trim().toLowerCase() ===
+        String(target.description || "").trim().toLowerCase() &&
+      isSameInstallmentType(installment, target),
+  );
 
 const buildInstallments = (
   count,
@@ -188,24 +235,31 @@ const buildInstallments = (
         feeComponents.courseFee +
         feeComponents.certificateFee,
     );
+    const description =
+      safeCount === 1
+        ? "Full Payment"
+        : isFirst
+          ? "Admission Fee + Course Fee"
+          : isLast
+            ? "Course Fee + Certificate Fee"
+            : `Course Fee Installment ${index + 1}`;
+    const existingInstallment = findMatchingInstallment(existing, {
+      installmentNumber: index + 1,
+      description,
+      feeComponents,
+    });
 
     return {
       installmentNumber: index + 1,
-      description:
-        safeCount === 1
-          ? "Full Payment"
-          : isFirst
-            ? "Admission Fee + Course Fee"
-            : isLast
-              ? "Course Fee + Certificate Fee"
-              : `Course Fee Installment ${index + 1}`,
+      description,
       amount,
       dueDate:
-        existing[index]?.dueDate && dayjs(existing[index].dueDate).isValid()
-          ? dayjs(existing[index].dueDate)
+        existingInstallment?.dueDate &&
+        dayjs(existingInstallment.dueDate).isValid()
+          ? dayjs(existingInstallment.dueDate)
           : addMonths(startDate, index),
-      status: existing[index]?.status || "Pending",
-      paidAmount: existing[index]?.paidAmount || 0,
+      status: existingInstallment?.status || "Pending",
+      paidAmount: existingInstallment?.paidAmount || 0,
       feeComponents,
     };
   });
@@ -218,7 +272,7 @@ const buildInstallments = (
     if (fee.paymentMode === "one_time") {
       const componentKey = getFeeComponentKey(fee.feeType);
       const baseIndex = safeCount + extraOffset;
-      extraInstallments.push({
+      const installment = {
         installmentNumber: baseIndex + 1,
         description: `${fee.title}`,
         amount: fee.amount,
@@ -235,6 +289,21 @@ const buildInstallments = (
           otherFee: !["exam", "registration", "practical"].includes(fee.feeType) ? fee.amount : 0,
           [componentKey]: fee.amount,
         },
+      };
+      const existingInstallment = findMatchingInstallment(
+        existing,
+        installment,
+      );
+      extraInstallments.push({
+        ...installment,
+        dueDate:
+          existingInstallment?.dueDate &&
+          dayjs(existingInstallment.dueDate).isValid()
+            ? dayjs(existingInstallment.dueDate)
+            : installment.dueDate,
+        status: existingInstallment?.status || installment.status,
+        paidAmount:
+          existingInstallment?.paidAmount || installment.paidAmount,
       });
       extraOffset += 1;
       return;
@@ -244,7 +313,7 @@ const buildInstallments = (
     const second = round2(fee.amount - first);
     const baseIndex = safeCount + extraOffset;
 
-    extraInstallments.push({
+    const firstInstallment = {
       installmentNumber: baseIndex + 1,
       description: `${fee.title} - Installment 1/2`,
       amount: first,
@@ -260,9 +329,24 @@ const buildInstallments = (
         practicalFee: fee.feeType === "practical" ? first : 0,
         otherFee: fee.feeType === "other" ? first : 0,
       },
+    };
+    const existingFirstInstallment = findMatchingInstallment(
+      existing,
+      firstInstallment,
+    );
+    extraInstallments.push({
+      ...firstInstallment,
+      dueDate:
+        existingFirstInstallment?.dueDate &&
+        dayjs(existingFirstInstallment.dueDate).isValid()
+          ? dayjs(existingFirstInstallment.dueDate)
+          : firstInstallment.dueDate,
+      status: existingFirstInstallment?.status || firstInstallment.status,
+      paidAmount:
+        existingFirstInstallment?.paidAmount || firstInstallment.paidAmount,
     });
 
-    extraInstallments.push({
+    const secondInstallment = {
       installmentNumber: baseIndex + 2,
       description: `${fee.title} - Installment 2/2`,
       amount: second,
@@ -278,6 +362,21 @@ const buildInstallments = (
         practicalFee: fee.feeType === "practical" ? second : 0,
         otherFee: fee.feeType === "other" ? second : 0,
       },
+    };
+    const existingSecondInstallment = findMatchingInstallment(
+      existing,
+      secondInstallment,
+    );
+    extraInstallments.push({
+      ...secondInstallment,
+      dueDate:
+        existingSecondInstallment?.dueDate &&
+        dayjs(existingSecondInstallment.dueDate).isValid()
+          ? dayjs(existingSecondInstallment.dueDate)
+          : secondInstallment.dueDate,
+      status: existingSecondInstallment?.status || secondInstallment.status,
+      paidAmount:
+        existingSecondInstallment?.paidAmount || secondInstallment.paidAmount,
     });
     extraOffset += 2;
   });
@@ -505,12 +604,29 @@ const CourseAssignmentForm = ({
       const enrollment = editingEnrollment;
       const fs = enrollment.feeStructure;
       const restoredAdditionalFees = buildAdditionalFeesFromFeeStructure(fs);
-      const storedInstallmentCount =
-        fs?.installments?.length || fs?.numberOfInstallments || 2;
+      const savedCourseInstallmentCount = Number(fs?.numberOfInstallments) || 0;
+      const courseInstallmentCount = getCourseInstallmentCount(fs?.installments);
+      const scheduleCount = fs?.installments?.length || 0;
+      const legacyCourseInstallmentCount =
+        courseInstallmentCount ||
+        Math.max(
+          0,
+          scheduleCount -
+            getAdditionalFeeInstallmentCount(restoredAdditionalFees),
+        );
+      const isLegacyTotalCount =
+        savedCourseInstallmentCount === scheduleCount &&
+        legacyCourseInstallmentCount > 0 &&
+        legacyCourseInstallmentCount < scheduleCount;
       const baseInstallmentCount = Math.max(
         1,
-        storedInstallmentCount -
-          getAdditionalFeeInstallmentCount(restoredAdditionalFees),
+        isLegacyTotalCount
+          ? legacyCourseInstallmentCount
+          : savedCourseInstallmentCount ||
+              courseInstallmentCount ||
+              scheduleCount -
+                getAdditionalFeeInstallmentCount(restoredAdditionalFees) ||
+              2,
       );
 
       form.resetFields();
@@ -552,7 +668,7 @@ const CourseAssignmentForm = ({
       // Set installments from feeStructure
       if (fs?.installments?.length > 0) {
         setInstallments(
-          fs.installments.map((inst) => ({
+          sortInstallmentsByNumber(fs.installments).map((inst) => ({
             ...inst,
             dueDate: inst.dueDate ? dayjs(inst.dueDate) : null,
           })),
@@ -568,10 +684,12 @@ const CourseAssignmentForm = ({
             );
             if (feeResponse.success && feeResponse.data?.installments?.length > 0) {
               setInstallments(
-                feeResponse.data.installments.map((inst) => ({
-                  ...inst,
-                  dueDate: inst.dueDate ? dayjs(inst.dueDate) : null,
-                })),
+                sortInstallmentsByNumber(feeResponse.data.installments).map(
+                  (inst) => ({
+                    ...inst,
+                    dueDate: inst.dueDate ? dayjs(inst.dueDate) : null,
+                  }),
+                ),
               );
               skipInstallmentInitRef.current = true;
             }
